@@ -20,12 +20,18 @@ import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 
 /** All discovery is explicitly started/stopped by the user. No background discovery service. */
 class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
-                 private val pending: () -> List<JSONObject>) {
+                 private val pending: () -> List<JSONObject>,
+                 private val identity: () -> PeerIdentity?,
+                 private val trusted: (String) -> Boolean,
+                 private val onImport: (File) -> Boolean,
+                 private val onStored: (String, String) -> Unit) {
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
+    val evidence = DirectEvidence(context, client, identity, trusted, onImport, onStored)
     private val executor = Executors.newSingleThreadExecutor()
     private val connected = LinkedHashSet<String>()
     private val attempted = HashSet<String>()
@@ -41,16 +47,24 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type != Payload.Type.BYTES) return
             if (!active) return
+            if (payload.type == Payload.Type.FILE) {
+                evidence.onFileReceived(endpointId, payload)
+                return
+            }
+            if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
             if (!limiter.allow(endpointId, bytes.size, SystemClock.elapsedRealtime())) return
             executor.execute {
-                try { onPacket(JSONObject(String(bytes, Charsets.UTF_8))) }
-                catch (_: Exception) { /* Ignore malformed/untrusted network content */ }
+                try {
+                    val json = JSONObject(String(bytes, Charsets.UTF_8))
+                    if (!evidence.handle(endpointId, json)) onPacket(json)
+                } catch (_: Exception) { /* Ignore malformed/untrusted network content */ }
             }
         }
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            evidence.onTransfer(endpointId, update)
+        }
     }
     private val lifecycle = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
@@ -75,6 +89,7 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                 }
                 if (!admitted) { client.disconnectFromEndpoint(endpointId); return }
                 status = "Sharing with $peerCount nearby device(s); delivery not guaranteed"
+                evidence.connected(endpointId)
                 // Bound replay volume per new connection. Previously queued traffic remains local.
                 pending().asSequence().filter { it.optInt("hops") > 0 }.take(32)
                     .forEach { sendTo(endpointId, it) }
@@ -84,6 +99,7 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
             synchronized(connected) { connected.remove(endpointId); peerCount = connected.size }
             attempted.remove(endpointId)
             limiter.forget(endpointId)
+            evidence.disconnected(endpointId)
             status = "Nearby devices: $peerCount"
         }
     }
@@ -129,7 +145,8 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
         synchronized(connected) { connected.clear(); peerCount = 0 }
         attempted.clear()
         limiter.clear()
+        evidence.stop()
         status = "Local sharing stopped"
     }
-    fun shutdown() { stop(); executor.shutdown() }
+    fun shutdown() { stop(); evidence.shutdown(); executor.shutdown() }
 }

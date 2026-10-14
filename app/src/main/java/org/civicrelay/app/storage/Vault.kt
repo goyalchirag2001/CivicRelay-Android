@@ -32,6 +32,7 @@ class Vault(private val context: Context) {
             .put("mediaKey", Crypto.b64(Crypto.randomBytes(32)))
             .put("contacts", JSONArray()).put("bulletins", JSONArray())
             .put("sosInbox", JSONArray()).put("incidents", JSONArray()).put("media", JSONArray())
+            .put("transfers", JSONArray())
         val localSalt = Crypto.randomBytes(16)
         val localKey = Crypto.derive(passphrase, localSalt)
         salt = localSalt; key = localKey; state = newState
@@ -75,17 +76,36 @@ class Vault(private val context: Context) {
         save()
     }
     @Synchronized fun append(category: String, item: JSONObject, max: Int = 150) {
-        require(category in setOf("bulletins", "sosInbox", "incidents", "media"))
-        val old = current().getJSONArray(category)
+        require(category in setOf("bulletins", "sosInbox", "incidents", "media", "transfers"))
+        val old = current().optJSONArray(category) ?: JSONArray()
         val output = JSONArray()
         for (i in maxOf(0, old.length() - max + 1) until old.length()) output.put(old.get(i))
         output.put(item)
         current().put(category, output)
         save()
     }
-    @Synchronized fun records(category: String): List<JSONObject> = current().getJSONArray(category).let { a ->
+    @Synchronized fun records(category: String): List<JSONObject> =
+        (current().optJSONArray(category) ?: JSONArray()).let { a ->
         // UI readers must not get mutable JSON objects owned by the encrypted vault state.
         (a.length() - 1 downTo 0).map { JSONObject(a.getJSONObject(it).toString()) }
+    }
+    @Synchronized fun logEvidenceOffer(id: String, sourceId: String, recipient: String, size: Long) {
+        append("transfers", JSONObject().put("id", id).put("sourceId", sourceId)
+            .put("recipientFingerprint", Crypto.fingerprint(recipient)).put("bytes", size)
+            .put("created", System.currentTimeMillis()).put("status", "OFFERED_NOT_STORED"))
+    }
+    @Synchronized fun recordEvidenceStored(id: String, recipient: String) {
+        val transfers = current().optJSONArray("transfers") ?: return
+        for (index in 0 until transfers.length()) {
+            val record = transfers.getJSONObject(index)
+            if (record.optString("id") == id &&
+                record.optString("recipientFingerprint") == Crypto.fingerprint(recipient)) {
+                record.put("status", "VERIFIED_STORED_BY_TRUSTED_APP")
+                record.put("receivedAt", System.currentTimeMillis())
+                save()
+                return
+            }
+        }
     }
     /** For legacy media without a per-file keyWrap, use the vault media key only locally. */
     @Synchronized fun evidenceSource(id: String): Pair<JSONObject, SecretKeySpec> {

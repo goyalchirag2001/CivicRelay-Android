@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import org.civicrelay.app.crypto.Crypto
 import org.civicrelay.app.crypto.Envelope
 import org.civicrelay.app.mesh.NearbyMesh
+import org.civicrelay.app.mesh.PeerIdentity
 import org.civicrelay.app.storage.RelayQueue
 import org.civicrelay.app.storage.Vault
 import org.civicrelay.app.storage.EvidenceBundle
@@ -18,7 +19,10 @@ import java.util.concurrent.Executors
 class CivicService(private val context: Context) {
     val vault = Vault(context)
     private val queue = RelayQueue(context)
-    val mesh = NearbyMesh(context, ::receivePacket, queue::all)
+    val mesh = NearbyMesh(context, ::receivePacket, queue::all,
+        { if (vault.unlocked) PeerIdentity(vault.pub(), vault.privateKey()) else null },
+        { key -> vault.unlocked && vault.contacts().any { it.second == key } },
+        ::importNearbyArchive, ::onEvidenceStored)
     var revision by mutableStateOf(0)
         private set
     var notice by mutableStateOf("Prototype: no guaranteed delivery. Never rely on it as your only emergency option.")
@@ -195,6 +199,30 @@ class CivicService(private val context: Context) {
             notice = "Encrypted evidence from verified contact imported: ${record.optString("kind")}."
             revision++
         } finally { importStage.delete() }
+    }
+    /** Called after a directly paired trusted peer's approved encrypted FILE transfer completes. */
+    @Synchronized private fun importNearbyArchive(file: File): Boolean {
+        if (!vault.unlocked) return false
+        val record = EvidenceBundle.import(context, vault, file) // verifies recipient/signature/GCM/hash
+        revision++
+        notice = "Trusted contact evidence encrypted copy verified locally: ${record.optString("kind")}."
+        return true
+    }
+    private fun onEvidenceStored(id: String, recipient: String) {
+        if (!vault.unlocked) return
+        vault.recordEvidenceStored(id, recipient)
+        revision++
+        notice = "Trusted contact app confirmed verified local storage of an encrypted copy."
+    }
+    fun offerNearbyEvidence(mediaId: String, contactKey: String) {
+        check(mesh.active) { "Start nearby sharing on both phones first" }
+        check(mesh.evidence.trustedEndpointFor(contactKey)) {
+            "Selected trusted contact is not authenticated directly nearby"
+        }
+        val archive = prepareEvidenceBundle(mediaId, contactKey)
+        val transferId = mesh.evidence.offerArchive(contactKey, archive)
+        vault.logEvidenceOffer(transferId, mediaId, contactKey, archive.length())
+        revision++
     }
     @Synchronized fun shutdown() { mesh.shutdown(); captureWriter.shutdown(); vault.lock() }
 }

@@ -444,8 +444,22 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         }
         HorizontalDivider()
         Text("Encrypted copies for trusted contacts", style = MaterialTheme.typography.titleMedium)
-        Text("Create an encrypted file for a verified contact. Transfer with USB or a user-selected local file-sharing method; the recipient imports it inside CivicRelay. No automatic mesh media transfer yet.",
+        Text("Share recipient-encrypted evidence directly over Nearby with an authenticated trusted contact. The recipient must approve before the file is sent. Both phones must remain unlocked with Mesh enabled.",
             style = MaterialTheme.typography.bodySmall)
+        val direct = civic.mesh.evidence
+        Text("Trusted nearby contacts: ${direct.trustedNearby} • Progress: ${direct.progress}%")
+        Text(direct.status, style = MaterialTheme.typography.bodySmall)
+        val pendingOffer = direct.offer
+        if (pendingOffer != null) {
+            val trustedName = civic.vault.contacts().firstOrNull { it.second == pendingOffer.sender }?.first ?: "Trusted contact"
+            Text("Incoming encrypted evidence: $trustedName (${pendingOffer.bytes / (1024 * 1024)} MiB)",
+                style = MaterialTheme.typography.titleMedium)
+            Text("Approving uses your phone storage. Content is verified before being added to your vault.")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { execute { direct.approve(pendingOffer.id) } }) { Text("Accept encrypted copy") }
+                OutlinedButton(onClick = { direct.decline(pendingOffer.id) }) { Text("Decline") }
+            }
+        }
         val contacts = civic.vault.contacts()
         contacts.forEach { (name, publicKey) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -457,9 +471,13 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         media.forEach { item ->
             RecordCard("${item.optString("kind")} • ${whenText(item.optLong("created"))}",
                 "SHA-256: ${item.optString("sha256")}\nOCR suggestion: ${item.optString("ocrSuggestion").take(180)}")
-            Button(enabled = selectedKey.isNotBlank(), onClick = {
+            Button(enabled = selectedKey.isNotBlank() && civic.mesh.active &&
+                direct.trustedEndpointFor(selectedKey), onClick = {
+                execute { civic.offerNearbyEvidence(item.getString("id"), selectedKey) }
+            }) { Text("Send encrypted copy over nearby") }
+            OutlinedButton(enabled = selectedKey.isNotBlank(), onClick = {
                 exportEvidence(item.getString("id"), selectedKey)
-            }) { Text("Make encrypted copy for selected contact") }
+            }) { Text("Export encrypted .crb file manually") }
         }
         HorizontalDivider()
         Text("Receive a trusted contact's evidence", style = MaterialTheme.typography.titleMedium)
@@ -471,8 +489,21 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         if (civic.hasPendingImport()) Button(onClick = { execute { civic.acceptPendingEvidenceImport() } }) {
             Text("Import pending copy from trusted contact")
         }
+        val transfers = civic.vault.records("transfers").take(10)
+        if (transfers.isNotEmpty()) {
+            HorizontalDivider()
+            Text("Encrypted evidence transfer history", style = MaterialTheme.typography.titleMedium)
+            transfers.forEach { item ->
+                RecordCard(whenText(item.optLong("created")),
+                    "Recipient fingerprint: ${item.optString("recipientFingerprint").take(16)}…\n" +
+                    when (item.optString("status")) {
+                        "VERIFIED_STORED_BY_TRUSTED_APP" -> "Stored and verified by intended trusted app; not human-reviewed"
+                        else -> "Offered; no signed storage receipt"
+                    })
+            }
+        }
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
-        Text("Encrypted file transfer and import do not confirm that another person has reviewed or retained the evidence.",
+        Text("A signed 'stored' receipt confirms only that the intended trusted app imported and verified the file. It is not proof someone viewed it or that the copy will remain available.",
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -504,7 +535,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 ctx.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
             }) { Text("Wi-Fi settings") }
         }
-        Text("Devices can detect radio activity and nearby participation. Public posts are readable by strangers.")
+        Text("Devices can detect radio activity and nearby participation. Public posts are readable by strangers. Direct evidence pairing reveals your persistent contact public key to nearby peers challenged by this app; do not assume anonymity.")
         Text("Connection state: ${mesh.status}")
         Text("Connected peers: ${mesh.peerCount}")
         Button(onClick = {

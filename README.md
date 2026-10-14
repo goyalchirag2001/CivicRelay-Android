@@ -1,6 +1,6 @@
 # CivicRelay — Android experimental starter
 
-**Status:** updated reliability-focused source code, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
+**Status:** direct encrypted evidence transfer prototype source, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
 
 ## What you get
 
@@ -14,27 +14,28 @@
 - Offline QR pairing (display and scan) for adding trusted public keys. **Both parties must compare fingerprints out-of-band** before trusting.
 - Optional SMS app handoff: only after an explicit button press. Cellular signal required; SMS is NOT end-to-end encrypted.
 - App screen capture prevention via FLAG_SECURE, Android cloud backup disabled, private app storage, lock on background.
-- **New:** per-file AES-256-GCM content keys for recordings; trusted-contact, recipient-encrypted 50 MiB maximum evidence export/import. Archive transfer and importer confirmation must be done manually.
+- **Previous:** per-file AES-256-GCM content keys for recordings and recipient-encrypted 50 MiB manual export/import remain available.
 - **New:** end-to-end encrypted SOS receipt packets signed by the actual trusted contact, resulting in `RECEIVED_BY_TRUSTED_APP` only if the original sender verifies the return receipt.
 - In-app **© 2026 Chirag Goyal. All rights reserved.** notice.
 - **Reliability update:** camera callbacks are cancelled on screen shutdown/backgrounding and attempted plaintext temp-file cleanup occurs, including when the vault has locked (this is **not secure deletion**).
 - **Reliability update:** a background packet cannot be processed after vault lock; encrypted-vault readers return immutable-by-convention JSON copies, and failed creation no longer leaves an unlocked partial state.
 - **Reliability update:** inbound Nearby packet sizes/rates are bounded per connection, connected peers and replay bursts are capped; app explains manual radio enabling. These are **not** anti-surveillance or full denial-of-service protections.
 - **Reliability update:** adding a trusted contact requires checking the displayed fingerprint and explicitly confirming comparison over another channel.
-- **Build support:** Windows build/install PowerShell scripts, optional GitHub Actions Android build workflow, and pure-JVM inbound traffic limiter unit tests.
+- **New:** on-demand 1-hop Nearby recipient-encrypted evidence transfer only to directly authenticated trusted contacts; receiver must explicitly accept an offer. Shows progress and locally stores cryptographically verified recipient-app storage receipts. 50 MiB evidence size ceiling; no automatic or background transfer.
+- **Build support:** Windows build/install PowerShell scripts, optional GitHub Actions Android build workflow, and pure-JVM inbound traffic limiter and transfer-policy unit tests.
 
 ## What this code does NOT provide
 
 - No automatic person identification or police face matching. No government facial database scraper.
 - No guarantees against police access, compelled disclosure, compromised Android OS, physical destruction, uninstall or factory reset.
 - No reliably persistent recording while the app is locked or in the background.
-- Manual recipient-encrypted evidence export/import is included; however, automatic media synchronization, playback and verified remote retention are not included.
+- Opt-in direct Nearby evidence transfers and manual export/import are included, but no multi-hop large-file relay, automatic background synchronization, playback, verified human review or permanent remote retention.
 - No SMS transmission by the app itself, no automatic telephone calls, no cloud push. Cryptographically signed app-level SOS receipts exist; there are no human read receipts or guaranteed delivery routes.
 - No continuous location tracking. One location fix per SOS, when permitted and available; it reaches parents only when a route exists to their app or the user sends an SMS through their own SMS app.
 - No spam moderation, abuse-resistant Sybil defense, full replay defense or anonymous wireless transport. Radio observers can still detect nearby participation.
-- No device-level Android integration test or APK build was possible in the authoring environment. Must build, test and review before distribution.
+- No device-level Android integration test or APK build was possible in the authoring environment. The new Nearby FILE protocol has **not** been device-validated. Must build, test and review before distribution.
 
-For build checks and real-device tests, start with **`docs/BUILD_AND_RELIABILITY_CHECKLIST.md`** and the updated **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
+For direct sharing security, consent and device tests read **`docs/NEARBY_EVIDENCE_TRANSFER.md`**. For build checks and real-device tests, start with **`docs/BUILD_AND_RELIABILITY_CHECKLIST.md`** and the updated **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
 
 ## Prerequisites
 
@@ -85,6 +86,7 @@ This is a **learning/research prototype**. Never advise protesters, witnesses or
 - `docs/TEST_MATRIX.md` — physical device acceptance checks
 - `docs/WINDOWS_SETUP_AND_TESTING.md` — Windows install/build/test commands and evidence copy workflow
 - `docs/EVIDENCE_AND_RECEIPTS.md` — encrypted archive and SOS receipt protocol
+- `docs/NEARBY_EVIDENCE_TRANSFER.md` — consented direct 1-hop encrypted evidence transfer protocol and threats
 
 ## Copyright and licensing
 

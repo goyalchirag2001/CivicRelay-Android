@@ -24,3 +24,11 @@ Copyright © 2026 Chirag Goyal. All rights reserved.
 - Bumped experimental version to 0.1.1-alpha.
 
 **No claim of a full Android build, APK, emulator test, or physical radio test.** Those remain blockers.
+
+## 0.1.2-alpha — Direct encrypted evidence transfer
+
+- Recipient-approved Nearby FILE copying of recipient-encrypted 50 MiB evidence archives after signed direct trusted-key challenge.
+- File-size/disk-space checks, hash-verification, authenticated import, sender-side signed storage receipt, progress display and encrypted transfer log.
+- Pure-JVM transfer-policy tests, detailed testing and security documentation.
+- Keeps manual `.crb` export/import as alternative.
+- Still **not** Android-built, real-device tested or independently security-audited.

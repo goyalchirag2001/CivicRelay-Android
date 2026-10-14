@@ -23,6 +23,26 @@ class EvidenceBundleInstrumentedTest {
         }
     }
 
+    @Test fun transferReceiptsArePersistedOnlyForMatchingTrustedContact() {
+        val a = isolatedContext("transferlog")
+        val vault = Vault(a).apply { create("long transfer-test passphrase 2026".toCharArray()) }
+        val friend = Vault(isolatedContext("friend")).apply {
+            create("long friend passphrase 2026".toCharArray())
+        }
+        val other = Vault(isolatedContext("other")).apply {
+            create("long unrelated passphrase 2026".toCharArray())
+        }
+        val id = UUID.randomUUID().toString()
+        vault.logEvidenceOffer(id, "source-media-test", friend.pub(), 1024)
+        vault.recordEvidenceStored(id, other.pub())
+        assertEquals("OFFERED_NOT_STORED", vault.records("transfers").first().getString("status"))
+        vault.recordEvidenceStored(id, friend.pub())
+        assertEquals("VERIFIED_STORED_BY_TRUSTED_APP", vault.records("transfers").first().getString("status"))
+        vault.lock()
+        vault.unlock("long transfer-test passphrase 2026".toCharArray())
+        assertEquals("VERIFIED_STORED_BY_TRUSTED_APP", vault.records("transfers").first().getString("status"))
+    }
+
     @Test fun encryptedEvidenceCanBeImportedOnlyByTrustedIntendedRecipient() {
         val a = isolatedContext("sender")
         val b = isolatedContext("recipient")
