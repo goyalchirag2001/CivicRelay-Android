@@ -130,9 +130,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                        if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED &&
-                            errorCode != BiometricPrompt.BIOMETRIC_ERROR_NEGATIVE_BUTTON)
+                        // The negative button is handled by setNegativeButton's listener.
+                        // BIOMETRIC_ERROR_NEGATIVE_BUTTON is not a public SDK constant.
+                        if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED) {
                             Toast.makeText(this@MainActivity, errString, Toast.LENGTH_SHORT).show()
+                        }
                     }
                 })
         } catch (_: Exception) {
