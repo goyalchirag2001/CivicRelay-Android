@@ -40,7 +40,9 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.ui:ui-tooling-preview:1.11.4")
     debugImplementation("androidx.compose.ui:ui-tooling:1.11.4")
-    implementation("com.google.android.gms:play-services-nearby:19.5.0")
+    // 19.5.0 includes Kotlin 2.4 metadata, incompatible with Kotlin compiler 2.2.21.
+    // Keep the earlier Nearby Connections API until a tested toolchain upgrade.
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
     implementation("com.google.android.gms:play-services-location:21.4.0")
     implementation("androidx.camera:camera-core:1.6.2")
     implementation("androidx.camera:camera-camera2:1.6.2")

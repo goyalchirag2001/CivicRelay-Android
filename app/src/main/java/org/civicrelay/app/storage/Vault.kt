@@ -8,7 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.PrivateKey
-import javax.crypto.SecretKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 /** Vault metadata and identity private key are encrypted at rest with a passphrase-derived key. */
 class Vault(private val context: Context) {

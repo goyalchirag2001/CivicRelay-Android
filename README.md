@@ -46,6 +46,7 @@ For in-app viewer, import/recovery and plaintext export restrictions, see **`doc
 
 - Android Studio (current stable); Java 17 for Gradle; Android SDK API 36; 2–3 physical Android phones with Google Play services installed.
 - Jetpack Compose 1.11.4 (pinned for `compileSdk 36` / AGP 8.13.2 compatibility; see `docs/COMPOSE_GRADLE_COMPATIBILITY.md`).
+- Google Nearby Connections 19.3.0 (pinned to avoid Kotlin 2.4 metadata in 19.5.0 with Kotlin compiler 2.2.21; see `docs/KOTLIN_COMPILATION_FIX.md`).
 - Gradle 8.13, Android Gradle Plugin 8.13.2, Kotlin 2.2.21. A Gradle Wrapper is not included: generate one from a trusted locally installed Gradle 8.13 installation. The new `tools/build-debug.ps1` works directly with Gradle in PATH.
 - Bluetooth + Wi-Fi enabled on participating devices; GPS optional for SOS location.
 

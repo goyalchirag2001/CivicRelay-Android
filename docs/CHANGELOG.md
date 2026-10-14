@@ -1,5 +1,12 @@
 # Changelog
 
+## Build compilation fix — Nearby metadata and vault import
+
+- Pinned `com.google.android.gms:play-services-nearby` from 19.5.0 to 19.3.0: the newer library carries Kotlin metadata 2.4.0 incompatible with the app Kotlin compiler 2.2.21.
+- Corrected `Vault.kt` import to `javax.crypto.spec.SecretKeySpec`. No encryption algorithms, vault bytes, or wire-protocol formats changed.
+- The previous `checkDebugAarMetadata` step passed on the user's Windows machine. These latest changes require re-running Android compilation and device tests.
+
+
 ## Build compatibility fix — Compose API 36
 
 - Corrected the four direct Jetpack Compose dependencies from 1.12.1 to 1.11.4 so AAR metadata matches Android Gradle Plugin 8.13.2 and `compileSdk 36`.
