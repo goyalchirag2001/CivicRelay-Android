@@ -1,5 +1,12 @@
 # Changelog
 
+## Build compatibility fix — Compose API 36
+
+- Corrected the four direct Jetpack Compose dependencies from 1.12.1 to 1.11.4 so AAR metadata matches Android Gradle Plugin 8.13.2 and `compileSdk 36`.
+- JDK 17, Gradle 8.13, Kotlin, project source code, evidence handling and copyright remain unchanged.
+- Verified source-package integrity and patch consistency only. Full Android build still pending on Windows.
+
+
 ## v0.1.3-alpha — Evidence viewer and recovery
 
 - Added authenticated in-memory JPEG/MP4 preview after AES-GCM and SHA-256 verification.

@@ -30,14 +30,16 @@ android {
     packaging { resources.excludes.add("/META-INF/{AL2.0,LGPL2.1}") }
 }
 dependencies {
+    // Compose 1.12+ requires compileSdk 37 / AGP 9.1+. Keep 1.11.x
+    // while this app uses compileSdk 36 and Android Gradle Plugin 8.13.2.
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.compose.ui:ui:1.12.1")
-    implementation("androidx.compose.foundation:foundation:1.12.1")
+    implementation("androidx.compose.ui:ui:1.11.4")
+    implementation("androidx.compose.foundation:foundation:1.11.4")
     implementation("androidx.compose.material3:material3:1.4.0")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.12.1")
-    debugImplementation("androidx.compose.ui:ui-tooling:1.12.1")
+    implementation("androidx.compose.ui:ui-tooling-preview:1.11.4")
+    debugImplementation("androidx.compose.ui:ui-tooling:1.11.4")
     implementation("com.google.android.gms:play-services-nearby:19.5.0")
     implementation("com.google.android.gms:play-services-location:21.4.0")
     implementation("androidx.camera:camera-core:1.6.2")
