@@ -1,6 +1,6 @@
 # CivicRelay — Android experimental starter
 
-**Status:** updated source code, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
+**Status:** updated reliability-focused source code, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
 
 ## What you get
 
@@ -16,7 +16,12 @@
 - App screen capture prevention via FLAG_SECURE, Android cloud backup disabled, private app storage, lock on background.
 - **New:** per-file AES-256-GCM content keys for recordings; trusted-contact, recipient-encrypted 50 MiB maximum evidence export/import. Archive transfer and importer confirmation must be done manually.
 - **New:** end-to-end encrypted SOS receipt packets signed by the actual trusted contact, resulting in `RECEIVED_BY_TRUSTED_APP` only if the original sender verifies the return receipt.
-- **New:** in-app **© 2026 Chirag Goyal. All rights reserved.** notice.
+- In-app **© 2026 Chirag Goyal. All rights reserved.** notice.
+- **Reliability update:** camera callbacks are cancelled on screen shutdown/backgrounding and attempted plaintext temp-file cleanup occurs, including when the vault has locked (this is **not secure deletion**).
+- **Reliability update:** a background packet cannot be processed after vault lock; encrypted-vault readers return immutable-by-convention JSON copies, and failed creation no longer leaves an unlocked partial state.
+- **Reliability update:** inbound Nearby packet sizes/rates are bounded per connection, connected peers and replay bursts are capped; app explains manual radio enabling. These are **not** anti-surveillance or full denial-of-service protections.
+- **Reliability update:** adding a trusted contact requires checking the displayed fingerprint and explicitly confirming comparison over another channel.
+- **Build support:** Windows build/install PowerShell scripts, optional GitHub Actions Android build workflow, and pure-JVM inbound traffic limiter unit tests.
 
 ## What this code does NOT provide
 
@@ -29,12 +34,12 @@
 - No spam moderation, abuse-resistant Sybil defense, full replay defense or anonymous wireless transport. Radio observers can still detect nearby participation.
 - No device-level Android integration test or APK build was possible in the authoring environment. Must build, test and review before distribution.
 
-For a more detailed setup with PowerShell commands and real-device tests, open **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
+For build checks and real-device tests, start with **`docs/BUILD_AND_RELIABILITY_CHECKLIST.md`** and the updated **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
 
 ## Prerequisites
 
 - Android Studio (current stable); Java 17 for Gradle; Android SDK API 36; 2–3 physical Android phones with Google Play services installed.
-- Gradle 8.13, Android Gradle Plugin 8.13.2, Kotlin 2.2.21. A Gradle Wrapper is not included: generate one from a trusted locally installed Gradle 8.13 installation.
+- Gradle 8.13, Android Gradle Plugin 8.13.2, Kotlin 2.2.21. A Gradle Wrapper is not included: generate one from a trusted locally installed Gradle 8.13 installation. The new `tools/build-debug.ps1` works directly with Gradle in PATH.
 - Bluetooth + Wi-Fi enabled on participating devices; GPS optional for SOS location.
 
 ## Build on Windows, step by step
@@ -43,7 +48,7 @@ For a more detailed setup with PowerShell commands and real-device tests, open *
 2. Open **Settings → Languages & Frameworks → Android SDK → SDK Platforms**. Install **Android 16 (API 36)**, then ensure SDK Build-Tools and Android Platform-Tools are installed.
 3. Set Android Studio's **Gradle JDK** to JDK 17 (Studio's bundled JBR, if it is 17, or a separate JDK 17).
 4. The supplied project intentionally contains no precompiled Gradle Wrapper binary. Install a trusted Gradle 8.13 locally (`https://gradle.org/install/`) and from the project root run `gradle wrapper --gradle-version 8.13` to generate official `gradlew.bat` and wrapper files. Confirm the generated wrapper JAR against Gradle's published checksums.
-5. In Android Studio choose **Sync Project with Gradle Files**. Run in terminal (Windows):
+5. In Android Studio choose **Sync Project with Gradle Files**. Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-debug.ps1 -RunLint`, or run in terminal (Windows):
 
    ```powershell
    .\gradlew.bat :app:assembleDebug
@@ -69,10 +74,14 @@ This is a **learning/research prototype**. Never advise protesters, witnesses or
 - `storage/` — passphrase+hardware-bound vault, encrypted evidence, bounded relay cache
 - `mesh/` — Nearby Connections transport
 - `media/` — CameraX evidence capture, bundled OCR, QR scanner/generator
-- `app/src/androidTest/` — Android crypto/envelope instrumentation tests
+- `app/src/androidTest/` — Android crypto/envelope and relay-cache instrumentation tests
+- `app/src/test/` — JVM tests for inbound network traffic limits
+- `tools/` — build and local USB installation helper scripts
+- `.github/workflows/android-build.yml` — optional CI build verification (requires GitHub Actions)
 - `docs/ARCHITECTURE.md` — protocol/flow and threat model
 - `docs/SECURITY.md` — limitations and security hardening priorities
 - `docs/48_HOUR_PLAN.md` — 48-hour development/test plan
+- `docs/BUILD_AND_RELIABILITY_CHECKLIST.md` — release-blocking build and on-device checks
 - `docs/TEST_MATRIX.md` — physical device acceptance checks
 - `docs/WINDOWS_SETUP_AND_TESTING.md` — Windows install/build/test commands and evidence copy workflow
 - `docs/EVIDENCE_AND_RECEIPTS.md` — encrypted archive and SOS receipt protocol

@@ -16,3 +16,13 @@ Date: 2026-10-14
 - [ ] Release APK/build/signing (NOT RUN).
 
 **Do not interpret this source archive as a validated, secure, operational emergency application.**
+
+
+## Reliability update verification
+
+- [x] Limited inbound traffic logic isolated in a plain Kotlin class; compiled with local Kotlin/JVM compiler and passed an independent deterministic host-side test harness.
+- [x] New Android instrumentation tests added for duplicate/expired relay packets and the 128-item cache limit (not executed).
+- [x] Generated Windows build/install scripts and optional CI with Gradle/AGP versions specified.
+- [x] Static checks of camera cancellation, vault synchronization, and user-visible radio controls.
+- [ ] Android SDK Gradle build and instrumentation tests (environment not equipped to perform).
+- [ ] Real-device validation of cancellation callbacks, QR pairing, Nearby advertising, OCR, and receipt semantics.

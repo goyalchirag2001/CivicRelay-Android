@@ -41,3 +41,10 @@ Capture **visible, user-observed** nameplate, badge, unit, time, location and wi
 4. Test on a diverse fleet of physical Android devices with no mobile internet, Bluetooth-only, Wi-Fi-only, crowded radios and three-hop participation.
 5. Perform penetration testing (packet flooding, replay, malformed payloads, malicious contact keys, UI deception, unverified news, GPS spoofing).
 6. Create external security disclosure policy, reproducible builds, signing key custody and emergency release rollback procedure.
+
+## Reliability-update notes
+
+- The per-endpoint ingress quota mitigates simple packet floods. It does **not** prevent Sybil attacks, spoofed endpoint changes, or surveillance of nearby radio activity.
+- Camera cancellation/temporary-file cleanup is best effort; Android flash memory and interrupted recordings cannot be relied upon for cryptographic erasure. Content is not capture-time encrypted.
+- Fingerprint confirmation remains self-attested; the UI cannot ensure a user truly compared it over an independent trusted channel.
+- The imported encrypted vault is local-only and device-key-bound. There is no centrally recoverable administrator password.

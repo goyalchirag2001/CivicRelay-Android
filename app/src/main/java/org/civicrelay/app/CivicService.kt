@@ -13,6 +13,7 @@ import org.civicrelay.app.storage.Vault
 import org.civicrelay.app.storage.EvidenceBundle
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
 class CivicService(private val context: Context) {
     val vault = Vault(context)
@@ -23,8 +24,10 @@ class CivicService(private val context: Context) {
     var notice by mutableStateOf("Prototype: no guaranteed delivery. Never rely on it as your only emergency option.")
         private set
     private var lastPost = 0L
+    // Deliberately independent of a Compose screen's cancellable coroutine scope.
+    private val captureWriter = Executors.newSingleThreadExecutor()
 
-    fun unlock(passphrase: String): Boolean = try {
+    @Synchronized fun unlock(passphrase: String): Boolean = try {
         val chars = passphrase.toCharArray()
         try { if (vault.exists) vault.unlock(chars) else vault.create(chars) }
         finally { chars.fill('\u0000') }
@@ -32,15 +35,15 @@ class CivicService(private val context: Context) {
         true
     } catch (_: Exception) { notice = "Could not open vault. Check passphrase and storage integrity."; false }
 
-    fun lock() { mesh.stop(); vault.lock(); revision++ }
-    fun addContact(alias: String, code: String) {
+    @Synchronized fun lock() { mesh.stop(); vault.lock(); revision++ }
+    @Synchronized fun addContact(alias: String, code: String) {
         val key = code.trim().removePrefix("CRCONTACT1:")
         vault.addContact(alias, key)
         revision++
         notice = "Trusted key saved. Verify fingerprint with your contact in person."
     }
     fun contactCode(): String = "CRCONTACT1:${vault.pub()}"
-    fun post(text: String) {
+    @Synchronized fun post(text: String) {
         val trimmed = text.trim()
         require(trimmed.isNotEmpty() && trimmed.length <= 280)
         val now = System.currentTimeMillis()
@@ -53,7 +56,7 @@ class CivicService(private val context: Context) {
         lastPost = now; revision++
         notice = "Update saved and offered to connected peers; not globally delivered."
     }
-    fun sendSos(message: String, latitude: Double?, longitude: Double?, accuracy: Float?) {
+    @Synchronized fun sendSos(message: String, latitude: Double?, longitude: Double?, accuracy: Float?) {
         val contacts = vault.contacts()
         require(contacts.isNotEmpty()) { "Add and verify at least one trusted contact first" }
         val body = JSONObject().put("message", message.take(500))
@@ -72,8 +75,8 @@ class CivicService(private val context: Context) {
         revision++
         notice = "SOS encrypted and queued. A trusted contact app may return an encrypted receipt when a route exists."
     }
-    private fun receivePacket(packet: JSONObject) {
-        if (!Envelope.valid(packet)) return
+    @Synchronized private fun receivePacket(packet: JSONObject) {
+        if (!vault.unlocked || !Envelope.valid(packet)) return
         val remaining = packet.getInt("hops") - 1
         val forwardingCopy = JSONObject(packet.toString()).put("hops", remaining.coerceAtLeast(0))
         if (!queue.add(forwardingCopy)) return
@@ -121,7 +124,7 @@ class CivicService(private val context: Context) {
         if (remaining > 0) mesh.broadcast(forwardingCopy)
         revision++
     }
-    fun saveIncident(notes: String, officerId: String, location: String) {
+    @Synchronized fun saveIncident(notes: String, officerId: String, location: String) {
         require(notes.isNotBlank())
         vault.append("incidents", JSONObject().put("notes", notes.take(3000))
             .put("officerDetails", officerId.take(500)).put("location", location.take(500))
@@ -129,10 +132,29 @@ class CivicService(private val context: Context) {
         revision++
         notice = "Incident recorded in encrypted local vault."
     }
-    fun addMedia(source: File, kind: String, ocr: String = "") {
-        vault.saveMedia(source, kind, ocr)
-        revision++
-        notice = "$kind encrypted locally. Not copied to a trusted device."
+    @Synchronized fun addMedia(source: File, kind: String, ocr: String = "") {
+        // If background locking beats the CameraX finalize/OCR callbacks, discard plaintext.
+        try {
+            check(vault.unlocked) { "Vault locked before capture could be encrypted" }
+            vault.saveMedia(source, kind, ocr)
+            revision++
+            notice = "$kind encrypted locally. Not copied to a trusted device."
+        } finally { source.delete() }
+    }
+    fun persistCapturedMedia(source: File, kind: String, ocr: String = "") {
+        // A scope tied to the Evidence screen is cancelled as soon as the app locks.
+        // Always run (or safely discard) a capture on a lifecycle-independent executor.
+        try {
+            captureWriter.execute {
+                try { addMedia(source, kind, ocr) }
+                catch (_: Exception) {
+                    source.delete()
+                    notice = "Capture was not saved (vault locked or storage unavailable)."
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            source.delete()
+        }
     }
     private val importStage = File(context.filesDir, "pending-evidence.crb")
     fun hasPendingImport(): Boolean = importStage.exists()
@@ -166,7 +188,7 @@ class CivicService(private val context: Context) {
             notice = "Encrypted file staged. Unlock and explicitly import it under Evidence."
         } finally { part.delete() }
     }
-    fun acceptPendingEvidenceImport() {
+    @Synchronized fun acceptPendingEvidenceImport() {
         check(importStage.exists()) { "No pending file" }
         try {
             val record = EvidenceBundle.import(context, vault, importStage)
@@ -174,5 +196,5 @@ class CivicService(private val context: Context) {
             revision++
         } finally { importStage.delete() }
     }
-    fun shutdown() { mesh.shutdown(); vault.lock() }
+    @Synchronized fun shutdown() { mesh.shutdown(); captureWriter.shutdown(); vault.lock() }
 }

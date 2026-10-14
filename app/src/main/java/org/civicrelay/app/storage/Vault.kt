@@ -32,10 +32,13 @@ class Vault(private val context: Context) {
             .put("mediaKey", Crypto.b64(Crypto.randomBytes(32)))
             .put("contacts", JSONArray()).put("bulletins", JSONArray())
             .put("sosInbox", JSONArray()).put("incidents", JSONArray()).put("media", JSONArray())
-        salt = Crypto.randomBytes(16)
-        key = Crypto.derive(passphrase, requireNotNull(salt))
-        state = newState
-        save()
+        val localSalt = Crypto.randomBytes(16)
+        val localKey = Crypto.derive(passphrase, localSalt)
+        salt = localSalt; key = localKey; state = newState
+        try { save() } catch (error: Exception) {
+            lock()
+            throw error
+        }
     }
     @Synchronized fun unlock(passphrase: CharArray) {
         val bytes = store.openRead().use { it.readBytes() }
@@ -43,10 +46,11 @@ class Vault(private val context: Context) {
         val localSalt = bytes.copyOfRange(4, 20)
         val localKey = Crypto.derive(passphrase, localSalt)
         val plaintext = Crypto.unseal(localKey, DeviceKey.unseal(bytes.copyOfRange(20, bytes.size)))
-        val parsed = JSONObject(String(plaintext, Charsets.UTF_8))
-        require(parsed.has("private") && parsed.has("public"))
-        salt = localSalt; key = localKey; state = parsed
-        plaintext.fill(0)
+        try {
+            val parsed = JSONObject(String(plaintext, Charsets.UTF_8))
+            require(parsed.has("private") && parsed.has("public"))
+            salt = localSalt; key = localKey; state = parsed
+        } finally { plaintext.fill(0) }
     }
     @Synchronized fun save() {
         val bytes = "CRV2".toByteArray() + requireNotNull(salt) + DeviceKey.seal(Crypto.seal(secretKey(), current().toString().toByteArray()))
@@ -54,14 +58,17 @@ class Vault(private val context: Context) {
         try { output.write(bytes); store.finishWrite(output) } catch (error: Exception) { store.failWrite(output); throw error }
     }
     @Synchronized fun lock() { state = null; key = null; salt = null }
-    fun pub(): String = current().getString("public")
-    fun privateKey(): PrivateKey = Crypto.privateKey(current().getString("private"))
-    fun contacts(): List<Pair<String, String>> = current().getJSONArray("contacts").let { a ->
+    @Synchronized fun pub(): String = current().getString("public")
+    @Synchronized fun privateKey(): PrivateKey = Crypto.privateKey(current().getString("private"))
+    @Synchronized fun contacts(): List<Pair<String, String>> = current().getJSONArray("contacts").let { a ->
         (0 until a.length()).map { i -> a.getJSONObject(i).getString("alias") to a.getJSONObject(i).getString("key") }
     }
     @Synchronized fun addContact(alias: String, publicKey: String) {
         require(alias.isNotBlank() && alias.length <= 48)
-        Crypto.publicKey(publicKey)
+        val parsed = Crypto.publicKey(publicKey)
+        require(parsed is java.security.interfaces.RSAPublicKey && parsed.modulus.bitLength() >= 3072) {
+            "Unsupported or weak contact public key"
+        }
         require(Crypto.fingerprint(publicKey) != Crypto.fingerprint(pub())) { "Cannot add yourself" }
         require(contacts().none { it.second == publicKey }) { "Contact already added" }
         current().getJSONArray("contacts").put(JSONObject().put("alias", alias.trim()).put("key", publicKey))
@@ -76,8 +83,9 @@ class Vault(private val context: Context) {
         current().put(category, output)
         save()
     }
-    fun records(category: String): List<JSONObject> = current().getJSONArray(category).let { a ->
-        (a.length() - 1 downTo 0).map { a.getJSONObject(it) }
+    @Synchronized fun records(category: String): List<JSONObject> = current().getJSONArray(category).let { a ->
+        // UI readers must not get mutable JSON objects owned by the encrypted vault state.
+        (a.length() - 1 downTo 0).map { JSONObject(a.getJSONObject(it).toString()) }
     }
     /** For legacy media without a per-file keyWrap, use the vault media key only locally. */
     @Synchronized fun evidenceSource(id: String): Pair<JSONObject, SecretKeySpec> {
@@ -88,7 +96,7 @@ class Vault(private val context: Context) {
         else mediaKey()
         return item to key
     }
-    fun mediaFile(info: JSONObject): File {
+    @Synchronized fun mediaFile(info: JSONObject): File {
         val name = info.getString("name")
         require(Regex("[0-9a-f-]{36}\\.crv").matches(name)) { "Invalid evidence filename" }
         return File(File(context.filesDir, "evidence"), name)
@@ -119,7 +127,9 @@ class Vault(private val context: Context) {
     }
     @Synchronized fun saveMedia(source: File, kind: String, ocr: String = ""): JSONObject {
         require(kind == "photo" || kind == "video")
-        require(source.exists())
+        require(source.isFile && source.length() in 1..EvidenceBundle.MAX_BYTES) {
+            "Recording is empty or larger than the 50 MiB prototype limit"
+        }
         val id = java.util.UUID.randomUUID().toString()
         val directory = File(context.filesDir, "evidence").apply { mkdirs() }
         val part = File(directory, "$id.partial")

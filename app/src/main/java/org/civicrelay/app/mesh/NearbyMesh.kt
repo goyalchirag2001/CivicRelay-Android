@@ -1,6 +1,7 @@
 package org.civicrelay.app.mesh
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +29,8 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
     private val executor = Executors.newSingleThreadExecutor()
     private val connected = LinkedHashSet<String>()
     private val attempted = HashSet<String>()
+    private val limiter = IngressLimiter()
+    private val peerLimit = 8
     private val serviceId = "org.civicrelay.app.mesh.v1"
     var status by mutableStateOf("Local sharing stopped")
         private set
@@ -39,8 +42,9 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type != Payload.Type.BYTES) return
+            if (!active) return
             val bytes = payload.asBytes() ?: return
-            if (bytes.size > 16_384) return
+            if (!limiter.allow(endpointId, bytes.size, SystemClock.elapsedRealtime())) return
             executor.execute {
                 try { onPacket(JSONObject(String(bytes, Charsets.UTF_8))) }
                 catch (_: Exception) { /* Ignore malformed/untrusted network content */ }
@@ -52,23 +56,40 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             // Public peers are not trusted identities. Payloads have independent signatures and
             // SOS envelopes are encrypted for manually verified contacts only.
-            client.acceptConnection(endpointId, payloadCallback).addOnFailureListener { status = "Connection rejected" }
+            if (!active || synchronized(connected) { connected.size >= peerLimit }) {
+                client.rejectConnection(endpointId)
+                return
+            }
+            client.acceptConnection(endpointId, payloadCallback)
+                .addOnFailureListener { status = "Nearby connection could not be accepted" }
         }
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
+            if (!active) {
+                client.disconnectFromEndpoint(endpointId)
+                return
+            }
             if (resolution.status.isSuccess) {
-                synchronized(connected) { connected.add(endpointId); peerCount = connected.size }
+                val admitted = synchronized(connected) {
+                    if (connected.size >= peerLimit) false
+                    else { connected.add(endpointId); peerCount = connected.size; true }
+                }
+                if (!admitted) { client.disconnectFromEndpoint(endpointId); return }
                 status = "Sharing with $peerCount nearby device(s); delivery not guaranteed"
-                pending().forEach { packet -> if (packet.optInt("hops") > 0) sendTo(endpointId, packet) }
+                // Bound replay volume per new connection. Previously queued traffic remains local.
+                pending().asSequence().filter { it.optInt("hops") > 0 }.take(32)
+                    .forEach { sendTo(endpointId, it) }
             } else attempted.remove(endpointId)
         }
         override fun onDisconnected(endpointId: String) {
             synchronized(connected) { connected.remove(endpointId); peerCount = connected.size }
             attempted.remove(endpointId)
+            limiter.forget(endpointId)
             status = "Nearby devices: $peerCount"
         }
     }
     private val discovery = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            if (!active || attempted.size >= 16) return
             if (attempted.add(endpointId)) {
                 client.requestConnection("CivicRelay", endpointId, lifecycle)
                     .addOnFailureListener { attempted.remove(endpointId) }
@@ -82,10 +103,16 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
         status = "Starting nearby radio discovery..."
         client.startAdvertising("CivicRelay", serviceId, lifecycle,
             AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
-            .addOnFailureListener { status = "Advertising unavailable: ${it.localizedMessage}" }
+            .addOnFailureListener {
+                stop()
+                status = "Advertising unavailable. Check Nearby permissions and enable Bluetooth/Wi-Fi."
+            }
         client.startDiscovery(serviceId, discovery,
             DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
-            .addOnFailureListener { status = "Discovery unavailable: ${it.localizedMessage}" }
+            .addOnFailureListener {
+                stop()
+                status = "Discovery unavailable. Check Nearby permissions and enable Bluetooth/Wi-Fi."
+            }
     }
     fun broadcast(packet: JSONObject) {
         if (!active || packet.optInt("hops") <= 0) return
@@ -101,6 +128,7 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
         client.stopAdvertising(); client.stopDiscovery(); client.stopAllEndpoints()
         synchronized(connected) { connected.clear(); peerCount = 0 }
         attempted.clear()
+        limiter.clear()
         status = "Local sharing stopped"
     }
     fun shutdown() { stop(); executor.shutdown() }

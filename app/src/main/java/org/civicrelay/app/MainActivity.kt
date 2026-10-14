@@ -33,6 +33,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -146,9 +148,12 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             Button(onClick = {
                 if (passphrase.length < 12 || (!civic.vault.exists && passphrase != confirmPass)) {
                     error = "Passphrase must have 12+ characters and both entries must match"
-                } else execute {
-                    civic.unlock(passphrase)
+                } else {
+                    val entered = passphrase
                     passphrase = ""; confirmPass = ""
+                    execute {
+                        check(civic.unlock(entered)) { "Vault could not be opened. Verify your passphrase." }
+                    }
                 }
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                 Text(if (civic.vault.exists) "Unlock" else "Create vault")
@@ -251,9 +256,11 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         OutlinedButton(onClick = {
             fun showSms(loc: android.location.Location?) {
                 try {
-                    val coordinates = if (loc != null) " Coordinates: ${loc.latitude},${loc.longitude}." else " Location unavailable."
+                    val coordinates = if (smsIncludeLocation) {
+                        if (loc != null) " Coordinates: ${loc.latitude},${loc.longitude}." else " Location unavailable."
+                    } else ""
                     val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(smsPhone)}"))
-                    intent.putExtra("sms_body", "Emergency: $message.$coordinates Sent from CivicRelay.")
+                    intent.putExtra("sms_body", "Emergency: ${message.trim()}.$coordinates Sent from CivicRelay.")
                     activity.startActivity(intent)
                 } catch (_: Exception) { status = "No compatible SMS application is available" }
             }
@@ -306,6 +313,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
 @Composable private fun ContactsTab(civic: CivicService, execute: (() -> Unit) -> Unit) {
     var alias by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    var fingerprintChecked by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var scanning by remember { mutableStateOf(false) }
@@ -334,10 +342,26 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             AndroidView(modifier = Modifier.fillMaxWidth().height(230.dp),
                 factory = { ctx -> PreviewView(ctx).also { scanner.attach(it, lifecycleOwner) } })
         }
-        OutlinedTextField(code, { code = it }, label = { Text("Their CRCONTACT1 public code") },
+        OutlinedTextField(code, { code = it; fingerprintChecked = false },
+            label = { Text("Their CRCONTACT1 public code") },
             minLines = 3, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { val a = alias; val c = code; execute { civic.addContact(a, c) }; alias = ""; code = "" },
-            enabled = alias.isNotBlank() && code.isNotBlank()) { Text("Save verified contact") }
+        val theirFingerprint = remember(code) {
+            runCatching { Crypto.fingerprint(code.trim().removePrefix("CRCONTACT1:")) }.getOrNull()
+        }
+        if (!theirFingerprint.isNullOrBlank()) {
+            Text("Their key fingerprint: $theirFingerprint", style = MaterialTheme.typography.bodySmall)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(fingerprintChecked, { fingerprintChecked = it })
+            Text("I compared the complete fingerprint through a trusted independent channel")
+        }
+        Button(onClick = {
+            val a = alias; val c = code
+            execute { civic.addContact(a, c) }
+            alias = ""; code = ""; fingerprintChecked = false
+        }, enabled = alias.isNotBlank() && code.startsWith("CRCONTACT1:") && fingerprintChecked) {
+            Text("Save verified contact")
+        }
         HorizontalDivider()
         civic.vault.contacts().forEach { (name, pub) ->
             RecordCard(name, "Fingerprint: ${Crypto.fingerprint(pub)}")
@@ -386,9 +410,18 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var selectedKey by remember { mutableStateOf("") }
 
     val camera = remember { CameraSession(context, { file, kind, ocr ->
-        execute { civic.addMedia(file, kind, ocr) }
+        civic.persistCapturedMedia(file, kind, ocr)
     }, { status = it }) }
-    DisposableEffect(camera) { onDispose { camera.close() } }
+    DisposableEffect(camera, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) camera.close()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            camera.close()
+        }
+    }
     val grant = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p ->
         permitted = p[Manifest.permission.CAMERA] == true
     }
@@ -463,6 +496,14 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Nearby mesh", style = MaterialTheme.typography.headlineSmall)
         Text("Requires Google Play services, Bluetooth/Wi-Fi radios enabled, and participating nearby devices.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                ctx.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+            }) { Text("Bluetooth settings") }
+            OutlinedButton(onClick = {
+                ctx.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+            }) { Text("Wi-Fi settings") }
+        }
         Text("Devices can detect radio activity and nearby participation. Public posts are readable by strangers.")
         Text("Connection state: ${mesh.status}")
         Text("Connected peers: ${mesh.peerCount}")

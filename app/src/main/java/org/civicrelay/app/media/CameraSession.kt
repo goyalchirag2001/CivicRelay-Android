@@ -39,12 +39,25 @@ class CameraSession(private val context: Context, private val onMedia: (File, St
     private val main = ContextCompat.getMainExecutor(context)
     private val handler = Handler(Looper.getMainLooper())
     private val tempDir = File(context.cacheDir, "capture").apply { mkdirs() }
+    // Cancel asynchronous camera/OCR callbacks when the vault locks or the screen is disposed.
+    // This is best-effort cleanup, NOT secure deletion on flash storage.
+    @Volatile private var closed = false
+    private val outstanding = mutableSetOf<File>()
+    private fun track(file: File): File = file.also { outstanding.add(it) }
+    private fun discard(file: File) { outstanding.remove(file); file.delete() }
+    private fun deliver(file: File, kind: String, ocr: String) {
+        if (closed) { discard(file); return }
+        outstanding.remove(file)
+        try { onMedia(file, kind, ocr) } catch (_: Exception) { file.delete() }
+    }
 
     fun attach(previewView: PreviewView, owner: LifecycleOwner) {
+        if (closed) return
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             try {
                 val provider = future.get()
+                if (closed) return@addListener
                 cameraProvider = provider
                 val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
                 val photo = ImageCapture.Builder().build()
@@ -58,46 +71,78 @@ class CameraSession(private val context: Context, private val onMedia: (File, St
         }, main)
     }
     fun photo() {
+        if (closed) return
         val capture = imageCapture ?: return onStatus("Camera not initialized")
-        val file = File(tempDir, "${UUID.randomUUID()}.jpg")
+        val file = track(File(tempDir, "${UUID.randomUUID()}.jpg"))
         capture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), main,
             object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(result: ImageCapture.OutputFileResults) { recognizeBadgeText(file) }
-                override fun onError(error: ImageCaptureException) { file.delete(); onStatus("Photo failed: ${error.message}") }
+                override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                    if (closed) discard(file) else recognizeBadgeText(file)
+                }
+                override fun onError(error: ImageCaptureException) {
+                    discard(file)
+                    if (!closed) onStatus("Photo failed: ${error.message}")
+                }
             })
     }
     private fun recognizeBadgeText(file: File) {
+        if (closed) { discard(file); return }
         // OCR is a suggestion, NOT a reliable verification of officer identity.
         val input = try { InputImage.fromFilePath(context, Uri.fromFile(file)) }
-        catch (_: Exception) { onMedia(file, "photo", ""); return }
+        catch (_: Exception) { deliver(file, "photo", ""); return }
         val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         latin.process(input).addOnCompleteListener { result ->
             val latinText = if (result.isSuccessful) result.result.text else ""
             latin.close()
+            if (closed) { discard(file); return@addOnCompleteListener }
             val hindi = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
             hindi.process(input).addOnCompleteListener { second ->
                 val hindiText = if (second.isSuccessful) second.result.text else ""
                 hindi.close()
-                onMedia(file, "photo", (latinText + "\n" + hindiText).trim().take(1200))
+                deliver(file, "photo", (latinText + "\n" + hindiText).trim().take(1200))
             }
         }
     }
     fun toggleVideo() {
-        activeRecording?.let { recording -> recording.stop(); activeRecording = null; onStatus("Finalizing video..."); return }
-        val video = videoCapture ?: return onStatus("Camera not initialized")
-        val file = File(tempDir, "${UUID.randomUUID()}.mp4")
-        var pending: PendingRecording = video.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
-            pending = pending.withAudioEnabled()
-        activeRecording = pending.start(main) { event ->
-            if (event is VideoRecordEvent.Finalize) {
-                activeRecording = null
-                if (!event.hasError() && file.exists()) onMedia(file, "video", "")
-                else { file.delete(); onStatus("Video capture failed: ${event.error}") }
-            }
+        if (closed) return
+        val existing = activeRecording
+        if (existing != null) {
+            existing.stop()
+            activeRecording = null
+            onStatus("Finalizing video...")
+            return
         }
-        onStatus("Recording. Maximum 30 seconds; tap Stop to finish.")
-        handler.postDelayed({ if (activeRecording != null) toggleVideo() }, 30_000)
+        val video = videoCapture ?: return onStatus("Camera not initialized")
+        val file = track(File(tempDir, "${UUID.randomUUID()}.mp4"))
+        try {
+            var pending: PendingRecording = video.output.prepareRecording(context,
+                FileOutputOptions.Builder(file).build())
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+                pending = pending.withAudioEnabled()
+            activeRecording = pending.start(main) { event ->
+                if (event is VideoRecordEvent.Finalize) {
+                    activeRecording = null
+                    if (!closed && !event.hasError() && file.exists()) deliver(file, "video", "")
+                    else {
+                        discard(file)
+                        if (!closed) onStatus("Video capture failed: ${event.error}")
+                    }
+                }
+            }
+            onStatus("Recording. Maximum 30 seconds; tap Stop to finish.")
+            handler.postDelayed({ if (activeRecording != null && !closed) toggleVideo() }, 30_000)
+        } catch (error: Exception) {
+            discard(file)
+            if (!closed) onStatus("Video could not start: ${error.localizedMessage}")
+        }
     }
-    fun close() { activeRecording?.stop(); activeRecording = null; cameraProvider?.unbindAll() }
+    fun close() {
+        if (closed) return
+        closed = true
+        handler.removeCallbacksAndMessages(null)
+        activeRecording?.stop()
+        activeRecording = null
+        cameraProvider?.unbindAll()
+        outstanding.toList().forEach(::discard)
+    }
 }

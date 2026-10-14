@@ -77,3 +77,16 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - `app/build.gradle.kts`: Android configuration and dependencies.
 
 After each edit, commit to Git and rebuild. Never place API secrets, QR private keys, real phone numbers, sensitive recordings, or real protester information in a repository.
+
+
+## Windows shortcut added in the reliability update
+
+After installing Android Studio + SDK, JDK 17, and Gradle 8.13, the simplest commands in PowerShell at the project root are:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-debug.ps1 -RunLint
+adb devices
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-debug.ps1
+```
+
+The build script prints a SHA-256 checksum for the resulting APK and **fails** on compilation/unit-test failures. It does not perform instrumentation tests or a security audit. See `docs/BUILD_AND_RELIABILITY_CHECKLIST.md` for a practical acceptance checklist.
