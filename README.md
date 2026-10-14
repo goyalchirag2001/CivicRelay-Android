@@ -1,0 +1,82 @@
+# CivicRelay — Android experimental starter
+
+**Status:** updated source code, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
+
+## What you get
+
+- Kotlin + Jetpack Compose Android app with no accounts, no app-managed backend and no mandatory cloud storage.
+- Local passphrase vault: PBKDF2-HMAC-SHA256 (310k rounds) + Android Keystore bound second AES-GCM layer. Device keys may be backed by security hardware depending on the phone. The passphrase is never uploaded.
+- A second, independent ephemeral-key-signed public bulletin identity per message (no long-lived bulletin pseudonym).
+- Recipient-encrypted SOS for up to 10 previously verified trusted public keys, local GPS when available, 2-hour expiry; no device identifiers needed.
+- Nearby Connections P2P_CLUSTER radio-based public bulletin and opaque encrypted SOS relay, three allowed hops, and capped local relay queue.
+- In-app CameraX photo capture, 30-second SD video, optional microphone, post-capture AES-GCM stream encryption using a random media key inside the wrapped vault, SHA-256 evidence digest and OCR suggestions for visible Latin/Devanagari text.
+- Structured incident form to document visible police name/badge/unit details, location and witness notes (manual, not facial recognition).
+- Offline QR pairing (display and scan) for adding trusted public keys. **Both parties must compare fingerprints out-of-band** before trusting.
+- Optional SMS app handoff: only after an explicit button press. Cellular signal required; SMS is NOT end-to-end encrypted.
+- App screen capture prevention via FLAG_SECURE, Android cloud backup disabled, private app storage, lock on background.
+- **New:** per-file AES-256-GCM content keys for recordings; trusted-contact, recipient-encrypted 50 MiB maximum evidence export/import. Archive transfer and importer confirmation must be done manually.
+- **New:** end-to-end encrypted SOS receipt packets signed by the actual trusted contact, resulting in `RECEIVED_BY_TRUSTED_APP` only if the original sender verifies the return receipt.
+- **New:** in-app **© 2026 Chirag Goyal. All rights reserved.** notice.
+
+## What this code does NOT provide
+
+- No automatic person identification or police face matching. No government facial database scraper.
+- No guarantees against police access, compelled disclosure, compromised Android OS, physical destruction, uninstall or factory reset.
+- No reliably persistent recording while the app is locked or in the background.
+- Manual recipient-encrypted evidence export/import is included; however, automatic media synchronization, playback and verified remote retention are not included.
+- No SMS transmission by the app itself, no automatic telephone calls, no cloud push. Cryptographically signed app-level SOS receipts exist; there are no human read receipts or guaranteed delivery routes.
+- No continuous location tracking. One location fix per SOS, when permitted and available; it reaches parents only when a route exists to their app or the user sends an SMS through their own SMS app.
+- No spam moderation, abuse-resistant Sybil defense, full replay defense or anonymous wireless transport. Radio observers can still detect nearby participation.
+- No device-level Android integration test or APK build was possible in the authoring environment. Must build, test and review before distribution.
+
+For a more detailed setup with PowerShell commands and real-device tests, open **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
+
+## Prerequisites
+
+- Android Studio (current stable); Java 17 for Gradle; Android SDK API 36; 2–3 physical Android phones with Google Play services installed.
+- Gradle 8.13, Android Gradle Plugin 8.13.2, Kotlin 2.2.21. A Gradle Wrapper is not included: generate one from a trusted locally installed Gradle 8.13 installation.
+- Bluetooth + Wi-Fi enabled on participating devices; GPS optional for SOS location.
+
+## Build on Windows, step by step
+
+1. Download and install **Android Studio** from `https://developer.android.com/studio`. Open the **CivicRelay-Android** folder (the folder containing `settings.gradle.kts`).
+2. Open **Settings → Languages & Frameworks → Android SDK → SDK Platforms**. Install **Android 16 (API 36)**, then ensure SDK Build-Tools and Android Platform-Tools are installed.
+3. Set Android Studio's **Gradle JDK** to JDK 17 (Studio's bundled JBR, if it is 17, or a separate JDK 17).
+4. The supplied project intentionally contains no precompiled Gradle Wrapper binary. Install a trusted Gradle 8.13 locally (`https://gradle.org/install/`) and from the project root run `gradle wrapper --gradle-version 8.13` to generate official `gradlew.bat` and wrapper files. Confirm the generated wrapper JAR against Gradle's published checksums.
+5. In Android Studio choose **Sync Project with Gradle Files**. Run in terminal (Windows):
+
+   ```powershell
+   .\gradlew.bat :app:assembleDebug
+   .\gradlew.bat :app:connectedDebugAndroidTest
+   ```
+
+6. If the build succeeds, find the debug APK at `app/build/outputs/apk/debug/app-debug.apk`. This location is **an expected Gradle output**; no APK is included here.
+7. Install only to your own test phones. Enable Developer options / USB debugging, connect the device and use Android Studio's Run button. Use a strong phone screen lock.
+8. Create a different passphrase on each device. Under **Contacts**, display the QR on Device A, scan it on Device B, and vice versa; **compare full key fingerprints on both screens** before entering trust.
+9. On each phone open **Mesh → Start nearby sharing**, grant radio permissions and confirm Bluetooth and Wi-Fi radios are on. Exchange a clearly labeled test update.
+10. Send a **test** SOS containing no real personal data. Verify the intended contact receives it and a third, non-recipient phone cannot read it. Never infer delivery from the sender's QUEUED status.
+
+For the fastest development loop, use a physical Android 13–16 phone; emulators are not a reliable substitute for radio mesh testing.
+
+## Emergency-use caution
+
+This is a **learning/research prototype**. Never advise protesters, witnesses or their families to depend on this app for emergency communication or evidence protection until a qualified independent team has reviewed and tested it. In an urgent emergency, use available local emergency services and established safety plans.
+
+## Repository contents
+
+- `app/src/main/java/org/civicrelay/app/` — activity, UI and orchestration
+- `crypto/` — asymmetric signed envelopes, recipient encryption, device key
+- `storage/` — passphrase+hardware-bound vault, encrypted evidence, bounded relay cache
+- `mesh/` — Nearby Connections transport
+- `media/` — CameraX evidence capture, bundled OCR, QR scanner/generator
+- `app/src/androidTest/` — Android crypto/envelope instrumentation tests
+- `docs/ARCHITECTURE.md` — protocol/flow and threat model
+- `docs/SECURITY.md` — limitations and security hardening priorities
+- `docs/48_HOUR_PLAN.md` — 48-hour development/test plan
+- `docs/TEST_MATRIX.md` — physical device acceptance checks
+- `docs/WINDOWS_SETUP_AND_TESTING.md` — Windows install/build/test commands and evidence copy workflow
+- `docs/EVIDENCE_AND_RECEIPTS.md` — encrypted archive and SOS receipt protocol
+
+## Copyright and licensing
+
+**Copyright © 2026 Chirag Goyal. All rights reserved.** See `COPYRIGHT.md`. No license is assigned to this starter. Before public open-source publication, choose a license (e.g., Apache-2.0 or GPLv3), include the full license text, and audit third-party dependency licenses.
