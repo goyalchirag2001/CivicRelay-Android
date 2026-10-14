@@ -64,3 +64,13 @@ Copyright © 2026 Chirag Goyal. All rights reserved.
 - Pure-JVM transfer-policy tests, detailed testing and security documentation.
 - Keeps manual `.crb` export/import as alternative.
 - Still **not** Android-built, real-device tested or independently security-audited.
+
+## 0.1.5-alpha — Background Nearby and quick unlock
+
+- Decoupled vault lock from Nearby; moving out of the app no longer immediately stops radios.
+- Introduced user-enabled `connectedDevice` foreground service with visible notification and Stop action.
+- Added two-minute background grace period for the local vault and optional Android 11+ Keystore-authenticated biometric quick unlock.
+- Added relaying of signed/recipient-encrypted packets while locked, with deferred private SOS processing on unlock.
+- Reorganized primary navigation with a dedicated Nearby tab, descriptive labels and vector icons.
+- Added clear privacy messaging, optional notification permission and device testing plan.
+- **Unverified:** full Android compilation, biometric enrollment/unlock and multi-phone runtime behavior require local Gradle + real-device tests.

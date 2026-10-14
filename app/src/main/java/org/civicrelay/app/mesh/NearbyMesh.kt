@@ -176,6 +176,14 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                 }
         }
     }
+    /** Re-authenticate trusted peers after the vault becomes available again.
+     * A connection may have been created while the vault was locked.
+     */
+    fun refreshTrustedHandshakes() {
+        if (!active || identity() == null) return
+        synchronized(connected) { connected.toList() }.forEach { evidence.connected(it) }
+    }
+
     fun broadcast(packet: JSONObject) {
         if (!active || packet.optInt("hops") <= 0) return
         synchronized(connected) { connected.toList() }.forEach { sendTo(it, packet) }

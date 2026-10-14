@@ -7,6 +7,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
+import android.hardware.biometrics.BiometricPrompt
+import android.hardware.biometrics.BiometricManager
+import android.widget.Toast
+import androidx.compose.ui.res.painterResource
 import android.os.SystemClock
 import android.location.Location
 import android.content.Intent
@@ -42,6 +47,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -64,27 +70,75 @@ import java.text.DateFormat
 import java.util.Date
 
 class MainActivity : ComponentActivity() {
-    private lateinit var civic: CivicService
+    private val app get() = application as CivicRelayApp
+    private val civic get() = app.civic
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        civic = CivicService(applicationContext)
-        // Remove orphaned plaintext captures from interrupted prior sessions (not secure erasure).
+        // Remove abandoned pre-encryption camera files (deletion is best effort).
         File(cacheDir, "capture").listFiles()?.forEach { it.delete() }
         cacheDir.listFiles()?.filter { it.name.endsWith(".working-crv") || it.name.endsWith(".crb") }
             ?.forEach { it.delete() }
-        setContent {
-            CivicTheme { CivicScreen(civic, this) }
-        }
+        setContent { CivicTheme { CivicScreen(civic, this) } }
     }
+    override fun onStart() { super.onStart(); app.cancelPrivateLock() }
     override fun onStop() {
-        // Emergency prototype prioritizes locking over background operation.
-        // Recording interrupted by backgrounding may be lost.
-        civic.lock()
-        File(cacheDir, "capture").listFiles()?.forEach { it.delete() }
+        // Keep the unlocked vault briefly for common flows such as SMS and document picker.
+        // Radio stays in a separate, visible foreground service until explicitly stopped.
+        app.schedulePrivateLock()
         super.onStop()
     }
-    override fun onDestroy() { civic.shutdown(); super.onDestroy() }
+    override fun onDestroy() { super.onDestroy() } // application owns CivicService
+
+    fun canUseFingerprint(): Boolean = Build.VERSION.SDK_INT >= 30 &&
+        getSystemService(BiometricManager::class.java).canAuthenticate(
+            BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+
+    /** Fingerprint never substitutes for the vault key. Keystore authorizes key unwrap. */
+    fun fingerprint(enroll: Boolean) {
+        if (!canUseFingerprint()) {
+            Toast.makeText(this, "Strong fingerprint not available; use passphrase", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            val cipher = if (enroll) civic.biometrics.prepareEnroll()
+                else civic.biometrics.prepareUnlock()
+            val prompt = BiometricPrompt.Builder(this)
+                .setTitle(if (enroll) "Enable fingerprint unlock" else "Unlock CivicRelay")
+                .setSubtitle("Private vault · Your passphrase remains available")
+                .setNegativeButton("Use passphrase", mainExecutor) { _, _ -> }
+                .build()
+            prompt.authenticate(BiometricPrompt.CryptoObject(cipher), CancellationSignal(), mainExecutor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        val authorized = result.cryptoObject?.cipher ?: return
+                        lifecycleScope.launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    if (enroll) civic.enableBiometric(authorized)
+                                    else check(civic.unlockWithBiometric(authorized)) { "Unlock failed" }
+                                }
+                                Toast.makeText(this@MainActivity,
+                                    if (enroll) "Fingerprint quick unlock enabled" else "Vault unlocked",
+                                    Toast.LENGTH_SHORT).show()
+                            } catch (_: Exception) {
+                                Toast.makeText(this@MainActivity,
+                                    "Fingerprint unavailable. Unlock with passphrase and re-enable it.",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED &&
+                            errorCode != BiometricPrompt.BIOMETRIC_ERROR_NEGATIVE_BUTTON)
+                            Toast.makeText(this@MainActivity, errString, Toast.LENGTH_SHORT).show()
+                    }
+                })
+        } catch (_: Exception) {
+            Toast.makeText(this, "Fingerprint setup unavailable. Use the passphrase.", Toast.LENGTH_LONG).show()
+        }
+    }
 }
 
 private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
@@ -176,9 +230,9 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             Spacer(Modifier.height(20.dp))
             ElevatedCard(shape = RoundedCornerShape(26.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(if (civic.vault.exists) "Unlock private vault" else "Create your encrypted vault",
+                    Text(if (civic.vault.exists) "Welcome back" else "Set up your private vault",
                         style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Stored locally • No central account", style = MaterialTheme.typography.bodySmall,
+                    Text("Your information stays on your phone", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(passphrase, { passphrase = it }, label = { Text("Vault passphrase") },
                         supportingText = { Text("At least 12 characters") },
@@ -200,7 +254,11 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                     }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                         Text(if (civic.vault.exists) "Unlock vault →" else "Create secure vault →")
                     }
-                    Text("No recovery service: forgetting your passphrase means losing access to stored data.",
+                    if (civic.vault.exists && civic.biometrics.enrolled && activity.canUseFingerprint()) {
+                        FilledTonalButton(onClick = { activity.fingerprint(false) },
+                            modifier = Modifier.fillMaxWidth()) { Text("Unlock with fingerprint") }
+                    }
+                    Text("Keep your passphrase safe. Fingerprint is optional and device-only.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
@@ -223,35 +281,41 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             Surface(shadowElevation = 3.dp, color = MaterialTheme.colorScheme.surface) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 13.dp),
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
-                        Text("CIVICRELAY", style = MaterialTheme.typography.titleLarge,
+                        Text("CivicRelay", style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        Text(if (civic.mesh.peerCount > 0) "● ${civic.mesh.peerCount} nearby connected" else
-                            "Private vault • Experimental alpha", style = MaterialTheme.typography.labelSmall,
+                        Text(if (civic.mesh.active) {
+                            if (civic.mesh.peerCount > 0) "Nearby on · ${civic.mesh.peerCount} connected"
+                            else "Nearby on · Looking for phones"
+                        } else "Nearby off · Tap Nearby to connect",
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    FilledTonalButton(onClick = { civic.lock(); passphrase = ""; tab = "SOS" }) {
-                        Text("Lock vault")
+                    TextButton(onClick = { civic.lock(); passphrase = ""; tab = "SOS" }) {
+                        Text("Lock")
                     }
                 }
             }
         },
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 7.dp) {
-                listOf(Triple("SOS", "●", "SOS"), Triple("Updates", "≋", "Updates"),
-                    Triple("Evidence", "◈", "Evidence"), Triple("More", "☷", "More"))
-                    .forEach { (title, symbol, description) ->
-                        NavigationBarItem(
-                            selected = if (title == "More") tab in listOf("More", "Incident", "Contacts", "Mesh") else tab == title,
-                            onClick = { tab = title },
-                            icon = { Text(symbol, style = MaterialTheme.typography.titleMedium) },
-                            label = { Text(description) },
-                            alwaysShowLabel = true
-                        )
-                    }
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 6.dp) {
+                listOf(
+                    Triple("SOS", R.drawable.ic_civic_sos, "SOS"),
+                    Triple("Updates", R.drawable.ic_civic_news, "News"),
+                    Triple("Evidence", R.drawable.ic_civic_evidence, "Files"),
+                    Triple("Mesh", R.drawable.ic_civic_nearby, "Nearby"),
+                    Triple("More", R.drawable.ic_civic_more, "More")
+                ).forEach { (section, image, label) ->
+                    NavigationBarItem(
+                        selected = if (section == "More") tab in listOf("More", "Incident", "Contacts") else tab == section,
+                        onClick = { tab = section },
+                        icon = { Icon(painterResource(image), contentDescription = label, modifier = Modifier.size(21.dp)) },
+                        label = { Text(label) }, alwaysShowLabel = true
+                    )
+                }
             }
         }
     ) { insets ->
@@ -280,7 +344,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
             if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
-            if (tab in setOf("Contacts", "Mesh", "Incident")) {
+            if (tab in setOf("Contacts", "Incident")) {
                 TextButton(onClick = { tab = "More" }) { Text("← Back to tools") }
             }
             key(tab) {
@@ -293,7 +357,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                     "Incident" -> IncidentTab(civic, ::execute)
                     "Contacts" -> ContactsTab(civic, ::execute)
                     "Mesh" -> MeshTab(civic)
-                    else -> MoreTab(civic) { tab = it }
+                    else -> MoreTab(civic, activity) { tab = it }
                 }
             }
         }
@@ -302,16 +366,37 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
 }
 
 
-@Composable private fun MoreTab(civic: CivicService, navigate: (String) -> Unit) {
+@Composable private fun MoreTab(civic: CivicService, activity: MainActivity, navigate: (String) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Tools & connections", style = MaterialTheme.typography.headlineMedium,
+        Text("Your tools and privacy", style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold)
-        Text("Local features stay on this phone. Nearby exchanges need participating phones and permissions.",
+        ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Privacy and quick unlock", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text("Stay signed in when switching apps. Your vault locks after 2 minutes in the background; Nearby can remain on independently.",
+                    style = MaterialTheme.typography.bodySmall)
+                if (activity.canUseFingerprint()) {
+                    if (civic.biometrics.enrolled) {
+                        OutlinedButton(onClick = { civic.disableBiometric() }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Turn off fingerprint unlock")
+                        }
+                    } else {
+                        Button(onClick = { activity.fingerprint(true) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Enable fingerprint unlock")
+                        }
+                    }
+                } else {
+                    Text("Fingerprint quick unlock requires Android 11+ and a strong enrolled fingerprint.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        Text("Choose what you want to manage. Your vault stays encrypted on this phone.",
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         listOf(
             Triple("Contacts", "Trusted contacts & QR", "Exchange public keys with a person you know, then verify fingerprints"),
-            Triple("Mesh", "Nearby connectivity", "Make a phone discoverable, find nearby peers, and inspect diagnostics"),
             Triple("Incident", "Document an incident", "Save encrypted observations, badge details and witness notes")
         ).forEach { (route, title, subtitle) ->
             ElevatedCard(onClick = { navigate(route) }, shape = RoundedCornerShape(22.dp),
@@ -401,6 +486,24 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        ElevatedCard(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (civic.mesh.active) "Nearby sharing is on" else "Nearby sharing is off",
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(if (civic.mesh.active)
+                        "${civic.mesh.peerCount} connected phones · continues in background"
+                        else "Use the Nearby tab to connect with local phones",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Text(if (civic.mesh.active) "●" else "○",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = if (civic.mesh.active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         if (civic.notice.isNotBlank()) Text(civic.notice,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -411,7 +514,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("EMERGENCY", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelLarge)
-                Text("Get help to your trusted circle", style = MaterialTheme.typography.headlineSmall,
+                Text("Reach your trusted people", style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold)
                 Text("SOS is end-to-end encrypted for verified contacts. Nearby devices can only relay ciphertext.",
                     style = MaterialTheme.typography.bodySmall)
@@ -423,7 +526,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             Checkbox(includeLocation, { includeLocation = it }); Text("Share precise location with trusted contacts")
         }
         Button(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth(),
-            enabled = civic.vault.contacts().isNotEmpty()) { Text("Queue private SOS  →") }
+            enabled = civic.vault.contacts().isNotEmpty()) { Text("Send protected SOS") }
         if (civic.vault.contacts().isEmpty()) Text("Add a trusted contact before sending an SOS.")
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
         Text("Queued is not delivered. Internet, SMS, and emergency-service calls are NOT initiated by this app.",
@@ -443,7 +546,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 smsLocationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             } else prepareSms()
         }, enabled = smsPhone.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text("Prepare SMS with location")
+            Text("Open SMS with my location")
         }
         if (smsStatus.isNotBlank()) Text(smsStatus, style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary)
@@ -475,12 +578,12 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
 @Composable private fun UpdatesTab(civic: CivicService, execute: (() -> Unit) -> Unit) {
     var text by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Nearby public updates", style = MaterialTheme.typography.headlineSmall)
+        Text("Community updates", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Everything posted here may be read, copied or redistributed by strangers. Reports are unverified.")
         OutlinedTextField(text, { text = it.take(280) }, label = { Text("Short public update") },
             modifier = Modifier.fillMaxWidth(), minLines = 2)
         Button(onClick = { val post = text; execute { civic.post(post) }; text = "" }, enabled = text.isNotBlank()) {
-            Text("Publish to nearby mesh")
+            Text("Share with nearby people")
         }
         HorizontalDivider()
         val entries = civic.vault.records("bulletins")
@@ -673,7 +776,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         }
         HorizontalDivider()
         Text("Encrypted copies for trusted contacts", style = MaterialTheme.typography.titleMedium)
-        Text("Share recipient-encrypted evidence directly over Nearby with an authenticated trusted contact. The recipient must approve before the file is sent. Both phones must remain unlocked with Mesh enabled.",
+        Text("Send a protected photo or video to a trusted person nearby. Both vaults must be unlocked to approve an evidence copy; Nearby can stay enabled in the background.",
             style = MaterialTheme.typography.bodySmall)
         val direct = civic.mesh.evidence
         Text("Trusted nearby contacts: ${direct.trustedNearby} • Progress: ${direct.progress}%")
@@ -791,9 +894,17 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             else -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     fun startSelected(mode: org.civicrelay.app.mesh.NearbyMesh.Mode) {
-        if (mode == org.civicrelay.app.mesh.NearbyMesh.Mode.ADVERTISE) mesh.startAsAdvertiser()
-        else mesh.startAsDiscoverer()
+        try {
+            NearbyForegroundService.start(ctx, mode)
+            // Notification permission is optional for the FGS, but makes radio status visible.
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } catch (_: Exception) {
+            permissionError = "Unable to start background Nearby service. Check permissions and device settings."
+        }
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         val denied = required.filter { ContextCompat.checkSelfPermission(ctx, it) != PackageManager.PERMISSION_GRANTED }
@@ -808,19 +919,19 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Nearby connection", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Use two physical Android phones with Google Play services. Grant nearby-radio and location permissions, turn on Bluetooth/Wi-Fi/Location services, and keep both apps open and unlocked. Permission does not publish GPS coordinates.",
+        Text("Connect with nearby phones", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Share local updates and relay encrypted alerts without mobile data. Start Nearby once; it stays active while you use other apps, with a visible notification.",
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         ElevatedCard(shape = RoundedCornerShape(22.dp)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("CONNECT TWO PHONES", style = MaterialTheme.typography.labelLarge,
+                Text("GET CONNECTED", style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary)
                 Text("Phone A", fontWeight = FontWeight.Bold)
                 Button(onClick = { launchRole(org.civicrelay.app.mesh.NearbyMesh.Mode.ADVERTISE) },
-                    modifier = Modifier.fillMaxWidth()) { Text("1. Make this phone discoverable") }
+                    modifier = Modifier.fillMaxWidth()) { Text("Make my phone visible") }
                 Text("Phone B", fontWeight = FontWeight.Bold)
                 OutlinedButton(onClick = { launchRole(org.civicrelay.app.mesh.NearbyMesh.Mode.DISCOVER) },
-                    modifier = Modifier.fillMaxWidth()) { Text("2. Find nearby phones") }
+                    modifier = Modifier.fillMaxWidth()) { Text("Search for phones") }
                 Text("After connecting, both phones can exchange updates, private SOS envelopes and approved encrypted evidence.",
                     style = MaterialTheme.typography.bodySmall)
             }
@@ -838,7 +949,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 if (permissionError.isNotBlank()) Text(permissionError, color = MaterialTheme.colorScheme.error)
             }
         }
-        OutlinedButton(onClick = { mesh.stop() }, enabled = mesh.active,
+        OutlinedButton(onClick = { NearbyForegroundService.stop(ctx) }, enabled = mesh.active,
             modifier = Modifier.fillMaxWidth()) { Text("Stop nearby connection") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { ctx.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) }) {
@@ -854,7 +965,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         Text("If no devices appear, confirm both phones use the same build, have radio permissions, and are close together. Radio activity may disclose participation. Delivery is not guaranteed.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Nearby stops when CivicRelay backgrounds or the vault locks.",
+        Text("Nearby continues with the vault locked, but only encrypted/public messages can be relayed. Open and unlock CivicRelay to read private alerts or transfer evidence. Bluetooth, Wi-Fi, battery limits, and Android may still interrupt service. Tap Stop to end sharing.",
             style = MaterialTheme.typography.labelSmall)
     }
 }

@@ -53,6 +53,24 @@ class Vault(private val context: Context) {
             salt = localSalt; key = localKey; state = parsed
         } finally { plaintext.fill(0) }
     }
+    /** Complete an AndroidKeystore authenticated quick unlock; never accept a short PIN. */
+    @Synchronized fun unlockDerived(derived: ByteArray, expectedSalt: ByteArray) {
+        require(derived.size == 32 && expectedSalt.size == 16)
+        val bytes = store.openRead().use { it.readBytes() }
+        require(bytes.size > 44 && String(bytes.copyOfRange(0, 4), Charsets.US_ASCII) == "CRV2")
+        val actualSalt = bytes.copyOfRange(4, 20)
+        require(java.security.MessageDigest.isEqual(actualSalt, expectedSalt)) { "Vault changed since biometric setup" }
+        val temporary = SecretKeySpec(derived.copyOf(), "AES")
+        val clear = Crypto.unseal(temporary, DeviceKey.unseal(bytes.copyOfRange(20, bytes.size)))
+        try {
+            val parsed = JSONObject(String(clear, Charsets.UTF_8))
+            require(parsed.has("public") && parsed.has("private"))
+            salt = actualSalt; key = temporary; state = parsed
+        } finally { clear.fill(0) }
+    }
+    @Synchronized fun currentKeyForBiometrics(): Pair<ByteArray, ByteArray> =
+        secretKey().encoded.copyOf() to requireNotNull(salt).copyOf()
+
     @Synchronized fun save() {
         val bytes = "CRV2".toByteArray() + requireNotNull(salt) + DeviceKey.seal(Crypto.seal(secretKey(), current().toString().toByteArray()))
         val output = store.startWrite()

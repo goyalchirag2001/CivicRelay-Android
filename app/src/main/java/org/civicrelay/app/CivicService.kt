@@ -20,6 +20,7 @@ import java.util.concurrent.Executors
 
 class CivicService(private val context: Context) {
     val vault = Vault(context)
+    val biometrics = org.civicrelay.app.crypto.BiometricVaultKey(context)
     private val queue = RelayQueue(context)
     val mesh = NearbyMesh(context, ::receivePacket, queue::all,
         { if (vault.unlocked) PeerIdentity(vault.pub(), vault.privateKey()) else null },
@@ -38,11 +39,74 @@ class CivicService(private val context: Context) {
         val chars = passphrase.toCharArray()
         try { if (vault.exists) vault.unlock(chars) else vault.create(chars) }
         finally { chars.fill('\u0000') }
+        replayPrivateInbox()
+        mesh.refreshTrustedHandshakes()
         revision++
         true
     } catch (_: Exception) { notice = "Could not open vault. Check passphrase and storage integrity."; false }
 
-    @Synchronized fun lock() { lockGeneration++; mesh.stop(); vault.lock(); revision++ }
+    /** Lock sensitive data without switching off the separately authorized Nearby radio service. */
+    @Synchronized fun lock() { lockGeneration++; vault.lock(); revision++ }
+
+    @Synchronized fun unlockWithBiometric(cipher: javax.crypto.Cipher): Boolean = try {
+        val (derived, salt) = biometrics.completeUnlock(cipher)
+        try { vault.unlockDerived(derived, salt) }
+        finally { derived.fill(0); salt.fill(0) }
+        replayPrivateInbox()
+        mesh.refreshTrustedHandshakes()
+        revision++
+        true
+    } catch (_: Exception) {
+        notice = "Fingerprint unlock unavailable. Use your vault passphrase."; false
+    }
+
+    @Synchronized fun enableBiometric(cipher: javax.crypto.Cipher) {
+        check(vault.unlocked)
+        val (derived, salt) = vault.currentKeyForBiometrics()
+        try { biometrics.completeEnroll(cipher, derived, salt) }
+        finally { derived.fill(0); salt.fill(0) }
+        revision++
+    }
+
+    @Synchronized fun disableBiometric() { biometrics.disable(); revision++ }
+
+    /** When locked, only bounded encrypted public relay storage/forwarding is allowed. */
+    private fun replayPrivateInbox() {
+        if (!vault.unlocked) return
+        queue.all().filter { it.optString("type") in setOf("sos", "receipt") }
+            .takeLast(150).forEach { processPrivate(it) }
+    }
+
+    private fun processPrivate(packet: JSONObject) {
+        if (!vault.unlocked || !Envelope.valid(packet)) return
+        try {
+            when (packet.getString("type")) {
+                "sos" -> {
+                    val clear = Envelope.tryOpenSos(packet, vault.privateKey()) ?: return
+                    val trusted = vault.contacts().find { it.second == clear.senderPublicKey } ?: return
+                    if (vault.records("sosInbox").any { it.optString("id") == packet.optString("id") }) return
+                    val body = JSONObject(clear.body)
+                    vault.append("sosInbox", JSONObject().put("id", packet.getString("id"))
+                        .put("sender", trusted.first).put("message", body.optString("message"))
+                        .put("location", if (body.has("latitude"))
+                            "${body.optDouble("latitude")},${body.optDouble("longitude")}" else "Unavailable")
+                        .put("time", body.optLong("time")).put("status", "RECEIVED_ON_THIS_DEVICE"))
+                    val receipt = Envelope.compose("receipt",
+                        JSONObject().put("for", packet.getString("id"))
+                            .put("receivedAt", System.currentTimeMillis()).toString(),
+                        vault.pub(), vault.privateKey(), listOf(clear.senderPublicKey))
+                    queue.add(receipt); mesh.broadcast(receipt)
+                }
+                "receipt" -> {
+                    val clear = Envelope.tryOpenPrivate(packet, vault.privateKey()) ?: return
+                    if (!vault.contacts().any { it.second == clear.senderPublicKey }) return
+                    if (vault.updateSosStatus(JSONObject(clear.body).getString("for"), clear.senderPublicKey))
+                        notice = "Trusted app confirmed SOS receipt; this does not mean anyone read it."
+                }
+            }
+        } catch (_: Exception) { /* Malformed encrypted payload must not break receiver. */ }
+    }
+
 
     /** Fully authenticates GCM and SHA-256 before handing any media to a viewer. */
     fun openVerifiedEvidence(mediaId: String): VerifiedEvidence {
@@ -125,52 +189,27 @@ class CivicService(private val context: Context) {
         notice = "SOS encrypted and queued. A trusted contact app may return an encrypted receipt when a route exists."
     }
     @Synchronized private fun receivePacket(packet: JSONObject) {
-        if (!vault.unlocked || !Envelope.valid(packet)) return
-        val remaining = packet.getInt("hops") - 1
-        val forwardingCopy = JSONObject(packet.toString()).put("hops", remaining.coerceAtLeast(0))
-        if (!queue.add(forwardingCopy)) return
-        try {
-            when (packet.getString("type")) {
-                "bulletin" -> {
-                    val text = Envelope.readBulletin(packet)
-                    vault.append("bulletins", JSONObject().put("text", text).put("id", packet.getString("id"))
-                        .put("sender", Crypto.fingerprint(packet.getString("sender")).take(12))
-                        .put("time", packet.getLong("created")).put("unverified", true))
-                }
-                "sos" -> {
-                    val clear = Envelope.tryOpenSos(packet, vault.privateKey())
-                    val trusted = clear?.let { verified ->
-                        vault.contacts().find { it.second == verified.senderPublicKey }
+        if (!Envelope.valid(packet)) return
+        val remaining = packet.optInt("hops") - 1
+        val forwarded = JSONObject(packet.toString()).put("hops", remaining.coerceAtLeast(0))
+        if (!queue.add(forwarded)) return
+        // Vault can be locked and radio can keep forwarding signed public posts / encrypted SOS.
+        // Decryption, identity, receipts and incident storage require an unlocked vault.
+        if (vault.unlocked) {
+            try {
+                when (packet.optString("type")) {
+                    "bulletin" -> {
+                        val body = Envelope.readBulletin(packet)
+                        vault.append("bulletins", JSONObject().put("text", body)
+                            .put("id", packet.getString("id"))
+                            .put("sender", Crypto.fingerprint(packet.getString("sender")).take(12))
+                            .put("time", packet.getLong("created")).put("unverified", true))
                     }
-                    if (clear != null && trusted != null) {
-                        val body = JSONObject(clear.body)
-                        vault.append("sosInbox", JSONObject().put("sender", trusted.first)
-                            .put("message", body.optString("message"))
-                            .put("location", if (body.has("latitude"))
-                                "${body.optDouble("latitude")},${body.optDouble("longitude")}" else "Unavailable")
-                            .put("time", body.optLong("time")).put("status", "RECEIVED_ON_THIS_DEVICE"))
-                        // Receipt signed by the verified recipient and encrypted only to the sender.
-                        val receipt = Envelope.compose("receipt",
-                            JSONObject().put("for", packet.getString("id"))
-                                .put("receivedAt", System.currentTimeMillis()).toString(),
-                            vault.pub(), vault.privateKey(), listOf(clear.senderPublicKey))
-                        queue.add(receipt)
-                        mesh.broadcast(receipt)
-                    }
+                    "sos", "receipt" -> processPrivate(packet)
                 }
-                "receipt" -> {
-                    val clear = Envelope.tryOpenPrivate(packet, vault.privateKey())
-                    if (clear != null && vault.contacts().any { it.second == clear.senderPublicKey }) {
-                        val ack = JSONObject(clear.body)
-                        val id = ack.getString("for")
-                        if (vault.updateSosStatus(id, clear.senderPublicKey)) {
-                            notice = "A trusted contact's app cryptographically confirmed SOS receipt. This does not mean it was read."
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) { /* Never crash receiving a malformed peer packet */ }
-        if (remaining > 0) mesh.broadcast(forwardingCopy)
+            } catch (_: Exception) { }
+        }
+        if (remaining > 0) mesh.broadcast(forwarded)
         revision++
     }
     @Synchronized fun saveIncident(notes: String, officerId: String, location: String) {

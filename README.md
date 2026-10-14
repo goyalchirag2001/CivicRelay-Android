@@ -1,4 +1,4 @@
-**Latest repair (0.1.4-alpha):** [Nearby connections, QR contacts, SMS location, modern UI and phone test guide](docs/PHONE_DISCOVERY_AND_UI_REPAIR.md).
+**Latest repair (0.1.5-alpha):** [Nearby connections, QR contacts, SMS location, modern UI and phone test guide](docs/PHONE_DISCOVERY_AND_UI_REPAIR.md).
 
 # CivicRelay — Android experimental starter
 
@@ -101,3 +101,7 @@ This is a **learning/research prototype**. Never advise protesters, witnesses or
 ## Copyright and licensing
 
 **Copyright © 2026 Chirag Goyal. All rights reserved.** See `COPYRIGHT.md`. No license is assigned to this starter. Before public open-source publication, choose a license (e.g., Apache-2.0 or GPLv3), include the full license text, and audit third-party dependency licenses.
+
+## Background Nearby and quick unlock (0.1.5-alpha)
+
+Nearby now runs only after the user explicitly enables it and uses an Android connected-device foreground service, independent of private-vault locking. The vault locks two minutes after backgrounding, while optional strong Android fingerprint quick unlock can be enabled from More. For setup, privacy caveats and two-phone test cases read [`docs/BACKGROUND_NEARBY_AND_QUICK_UNLOCK.md`](docs/BACKGROUND_NEARBY_AND_QUICK_UNLOCK.md). This feature requires physical Android device validation.
