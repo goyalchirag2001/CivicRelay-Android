@@ -7,6 +7,16 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
@@ -24,17 +34,27 @@ import com.google.zxing.common.BitMatrix
 import java.util.concurrent.Executors
 import android.content.Context
 
+/** QR should never crash the entire Contacts page; a copyable public code remains available. */
 @Composable fun ContactQr(code: String, modifier: Modifier = Modifier) {
-    val bitmap = remember(code) {
-        val bits: BitMatrix = MultiFormatWriter().encode(code, BarcodeFormat.QR_CODE, 700, 700)
-        val pixels = IntArray(700 * 700) { index ->
-            if (bits[index % 700, index / 700]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
-        }
-        Bitmap.createBitmap(pixels, 700, 700, Bitmap.Config.ARGB_8888).also {
-            it.setPixels(pixels, 0, 700, 0, 0, 700, 700)
-        }
+    val bitmap: Bitmap? = remember(code) {
+        runCatching {
+            // RSA-3072 public keys produce high-density QR symbols; render with a quiet margin.
+            val side = 420
+            val bits: BitMatrix = MultiFormatWriter().encode(code, BarcodeFormat.QR_CODE, side, side)
+            val pixels = IntArray(side * side) { index ->
+                if (bits[index % side, index / side]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            }
+            Bitmap.createBitmap(side, side, Bitmap.Config.RGB_565).apply {
+                setPixels(pixels, 0, side, 0, 0, side, side)
+            }
+        }.getOrNull()
     }
-    Image(bitmap.asImageBitmap(), contentDescription = "Your public contact QR code", modifier = modifier)
+    Box(modifier.background(Color.White), contentAlignment = Alignment.Center) {
+        if (bitmap != null) Image(bitmap.asImageBitmap(), "Scan this trusted-contact public key",
+            Modifier.fillMaxSize().padding(12.dp), contentScale = ContentScale.Fit)
+        else Text("QR could not be rendered. Use Copy public contact code instead.",
+            Modifier.padding(16.dp), color = Color.Black)
+    }
 }
 
 /** One-shot bundled ML Kit QR scanner; no server or network. */

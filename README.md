@@ -1,3 +1,5 @@
+**Latest repair (0.1.4-alpha):** [Nearby connections, QR contacts, SMS location, modern UI and phone test guide](docs/PHONE_DISCOVERY_AND_UI_REPAIR.md).
+
 # CivicRelay — Android experimental starter
 
 **Status:** encrypted evidence transfer and recovery/viewer prototype source, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.

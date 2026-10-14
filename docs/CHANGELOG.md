@@ -1,3 +1,11 @@
+## 0.1.4-alpha — Connectivity, QR, SMS, UI repair
+
+- Split Nearby radio discovery into explicit advertiser / discoverer roles for two-phone tests, with errors, discovery counts and connection diagnostics.
+- Guarded contact QR rendering/scanning, enlarged high-density QR and validated pasted contact keys. Exact Contacts crash root cause still requires device Logcat.
+- Explicit SMS location permission, GPS and recent-location fallback, maps link and non-deceptive unavailable state; manual send only.
+- Redesigned Compose dark/light theme, vault entry screen, bottom navigation and More hub. Copyright preserved.
+- Added standalone SMS-draft tests and detailed two-phone test matrix. Android SDK full build not run in preparation environment.
+
 # Changelog
 
 ## Build compilation fix — Nearby metadata and vault import

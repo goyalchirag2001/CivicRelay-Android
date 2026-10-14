@@ -2,6 +2,7 @@ package org.civicrelay.app.mesh
 
 import android.content.Context
 import android.os.SystemClock
+import com.google.android.gms.common.api.ApiException
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -37,7 +38,19 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
     private val attempted = HashSet<String>()
     private val limiter = IngressLimiter()
     private val peerLimit = 8
+    private var session = 0L
     private val serviceId = "org.civicrelay.app.mesh.v1"
+    enum class Mode { ADVERTISE, DISCOVER }
+    var mode by mutableStateOf<Mode?>(null)
+        private set
+    var foundCount by mutableIntStateOf(0)
+        private set
+    var diagnostics by mutableStateOf("No radio activity yet")
+        private set
+    private fun explain(error: Exception): String = when (error) {
+        is ApiException -> "Nearby code ${error.statusCode}: ${error.localizedMessage ?: "Google Play services rejected operation"}"
+        else -> "${error.javaClass.simpleName}: ${error.localizedMessage ?: "Unknown error"}"
+    }
     var status by mutableStateOf("Local sharing stopped")
         private set
     var peerCount by mutableIntStateOf(0)
@@ -75,7 +88,7 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                 return
             }
             client.acceptConnection(endpointId, payloadCallback)
-                .addOnFailureListener { status = "Nearby connection could not be accepted" }
+                .addOnFailureListener { status = "Connection acceptance failed"; diagnostics = explain(it) }
         }
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
             if (!active) {
@@ -93,42 +106,75 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                 // Bound replay volume per new connection. Previously queued traffic remains local.
                 pending().asSequence().filter { it.optInt("hops") > 0 }.take(32)
                     .forEach { sendTo(endpointId, it) }
-            } else attempted.remove(endpointId)
+            } else { attempted.remove(endpointId); diagnostics = "Connection rejected: code ${resolution.status.statusCode}"; status = diagnostics }
         }
         override fun onDisconnected(endpointId: String) {
             synchronized(connected) { connected.remove(endpointId); peerCount = connected.size }
             attempted.remove(endpointId)
             limiter.forget(endpointId)
             evidence.disconnected(endpointId)
-            status = "Nearby devices: $peerCount"
+            status = "Connected peers: $peerCount"
         }
     }
     private val discovery = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (!active || attempted.size >= 16) return
+            if (!active || mode != Mode.DISCOVER || attempted.size >= 16) return
+            foundCount++
+            diagnostics = "Found ${info.endpointName}. Requesting connection…"
             if (attempted.add(endpointId)) {
                 client.requestConnection("CivicRelay", endpointId, lifecycle)
-                    .addOnFailureListener { attempted.remove(endpointId) }
+                    .addOnSuccessListener { status = "Pairing with nearby peer…" }
+                    .addOnFailureListener { error ->
+                        attempted.remove(endpointId)
+                        diagnostics = "Connection request: ${explain(error)}"
+                        status = "Could not connect to found device"
+                    }
             }
         }
         override fun onEndpointLost(endpointId: String) { attempted.remove(endpointId) }
     }
-    fun start() {
-        if (active) return
+    /** A single, explicit radio role avoids simultaneous start failures on some devices.
+     * Once linked, communication is bidirectional regardless of the initial role.
+     */
+    fun startAsAdvertiser() = start(Mode.ADVERTISE)
+    fun startAsDiscoverer() = start(Mode.DISCOVER)
+    private fun start(selected: Mode) {
+        if (active) stop()
         active = true
-        status = "Starting nearby radio discovery..."
-        client.startAdvertising("CivicRelay", serviceId, lifecycle,
-            AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
-            .addOnFailureListener {
-                stop()
-                status = "Advertising unavailable. Check Nearby permissions and enable Bluetooth/Wi-Fi."
-            }
-        client.startDiscovery(serviceId, discovery,
-            DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
-            .addOnFailureListener {
-                stop()
-                status = "Discovery unavailable. Check Nearby permissions and enable Bluetooth/Wi-Fi."
-            }
+        val currentSession = ++session
+        mode = selected
+        foundCount = 0
+        diagnostics = "Starting ${selected.name.lowercase()} on Google Play services…"
+        status = if (selected == Mode.ADVERTISE) "Making phone discoverable…" else "Searching nearby phones…"
+        if (selected == Mode.ADVERTISE) {
+            client.startAdvertising("CivicRelay", serviceId, lifecycle,
+                AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
+                .addOnSuccessListener {
+                    if (!active || session != currentSession) return@addOnSuccessListener
+                    diagnostics = "Advertising active; start Find on the second phone"
+                    status = "Discoverable to CivicRelay phones nearby"
+                }
+                .addOnFailureListener { error ->
+                    if (!active || session != currentSession) return@addOnFailureListener
+                    diagnostics = "Advertising: ${explain(error)}"
+                    stop()
+                    status = "Advertising failed — see diagnostic below"
+                }
+        } else {
+            client.startDiscovery(serviceId, discovery,
+                DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
+                .addOnSuccessListener {
+                    if (!active || session != currentSession) return@addOnSuccessListener
+                    diagnostics = "Discovery active; waiting for advertising peers"
+                    status = "Scanning nearby…"
+                }
+                .addOnFailureListener { error ->
+                    if (!active || session != currentSession) return@addOnFailureListener
+                    diagnostics = "Discovery: ${explain(error)}"
+                    stop()
+                    status = "Discovery failed — see diagnostic below"
+                }
+        }
     }
     fun broadcast(packet: JSONObject) {
         if (!active || packet.optInt("hops") <= 0) return
@@ -141,6 +187,8 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
     }
     fun stop() {
         active = false
+        session++
+        mode = null
         client.stopAdvertising(); client.stopDiscovery(); client.stopAllEndpoints()
         synchronized(connected) { connected.clear(); peerCount = 0 }
         attempted.clear()
