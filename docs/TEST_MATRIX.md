@@ -34,3 +34,13 @@ Use fictional names, empty photos and dummy location only.
 | Build | assembleDebug + connectedDebugAndroidTest | Both pass, inspect lint and dependency issues |
 
 **Current authoring environment checks:** XML parse and static source checks were run; Android Studio/SDK, device, emulator and Gradle 8.13 were not present. The table above is **unexecuted**, not a declaration of passed tests.
+
+## Verified media preview and local recovery (added)
+
+- [ ] After camera capture, tap Verify & view for a JPEG and MP4; confirm GCM and SHA-256 validated and playback works without mobile data.
+- [ ] Tamper encrypted local file and confirm viewer refuses; do not display partly decrypted content.
+- [ ] Import a signed `.crb` copy from a verified trusted contact; confirm recovered-from fingerprint and ability to view/re-share it.
+- [ ] Select decrypted export; system document picker backgrounds and locks app, requires unlock and explicit finalize; test cancel and interrupted write cleanup.
+- [ ] Watch memory usage and process lifecycle (background lock, rotation, low-memory, export during lock).
+- [ ] Confirm output JPEG/MP4 outside vault is plaintext and carries explicit warning.
+- [ ] Run `:app:connectedDebugAndroidTest` including EvidenceViewerInstrumentedTest on Android device.

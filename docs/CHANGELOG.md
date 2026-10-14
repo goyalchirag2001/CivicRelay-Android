@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.3-alpha — Evidence viewer and recovery
+
+- Added authenticated in-memory JPEG/MP4 preview after AES-GCM and SHA-256 verification.
+- Added imported evidence provenance labels and reusable viewer for received copies.
+- Added user-controlled decrypted export using Android Storage Access Framework, with warning and unlock-after-picker safeguard.
+- Added basic media-format, pixel-bound, and MIME unit tests.
+- Still no verified Android build or physical device validation. No safety/security certification.
+
+# Changelog
+
 Copyright © 2026 Chirag Goyal. All rights reserved.
 
 ## Current experimental release

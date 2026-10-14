@@ -12,6 +12,8 @@ import org.civicrelay.app.mesh.PeerIdentity
 import org.civicrelay.app.storage.RelayQueue
 import org.civicrelay.app.storage.Vault
 import org.civicrelay.app.storage.EvidenceBundle
+import org.civicrelay.app.storage.EvidenceReader
+import org.civicrelay.app.storage.VerifiedEvidence
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
@@ -27,6 +29,7 @@ class CivicService(private val context: Context) {
         private set
     var notice by mutableStateOf("Prototype: no guaranteed delivery. Never rely on it as your only emergency option.")
         private set
+    @Volatile private var lockGeneration = 0L
     private var lastPost = 0L
     // Deliberately independent of a Compose screen's cancellable coroutine scope.
     private val captureWriter = Executors.newSingleThreadExecutor()
@@ -39,7 +42,49 @@ class CivicService(private val context: Context) {
         true
     } catch (_: Exception) { notice = "Could not open vault. Check passphrase and storage integrity."; false }
 
-    @Synchronized fun lock() { mesh.stop(); vault.lock(); revision++ }
+    @Synchronized fun lock() { lockGeneration++; mesh.stop(); vault.lock(); revision++ }
+
+    /** Fully authenticates GCM and SHA-256 before handing any media to a viewer. */
+    fun openVerifiedEvidence(mediaId: String): VerifiedEvidence {
+        val generation = lockGeneration
+        check(vault.unlocked) { "Unlock the vault before viewing evidence" }
+        val opened = EvidenceReader.open(vault, mediaId)
+        if (!vault.unlocked || generation != lockGeneration) {
+            opened.close()
+            error("Vault locked during evidence verification")
+        }
+        return opened
+    }
+
+    /** Explicit user-directed SAF export. Never stages a plaintext file in app cache. */
+    fun exportVerifiedPlaintext(mediaId: String, destination: Uri) {
+        val generation = lockGeneration
+        val opened = openVerifiedEvidence(mediaId)
+        var completed = false
+        try {
+            context.contentResolver.openOutputStream(destination, "w")?.use { output ->
+                var offset = 0
+                while (offset < opened.bytes.size) {
+                    check(vault.unlocked && generation == lockGeneration) {
+                        "Vault locked; decrypted export interrupted"
+                    }
+                    val count = minOf(32 * 1024, opened.bytes.size - offset)
+                    output.write(opened.bytes, offset, count)
+                    offset += count
+                }
+                output.flush()
+            } ?: error("Could not open selected destination")
+            check(vault.unlocked && generation == lockGeneration) { "Vault locked during export" }
+            completed = true
+            notice = "Decrypted copy exported to your selected location. Outside the vault it is unprotected."
+        } finally {
+            opened.close()
+            if (!completed) {
+                // SAF CreateDocument made a fresh destination. Remove incomplete plaintext if possible.
+                try { context.contentResolver.delete(destination, null, null) } catch (_: Exception) { }
+            }
+        }
+    }
     @Synchronized fun addContact(alias: String, code: String) {
         val key = code.trim().removePrefix("CRCONTACT1:")
         vault.addContact(alias, key)
@@ -224,5 +269,5 @@ class CivicService(private val context: Context) {
         vault.logEvidenceOffer(transferId, mediaId, contactKey, archive.length())
         revision++
     }
-    @Synchronized fun shutdown() { mesh.shutdown(); captureWriter.shutdown(); vault.lock() }
+    @Synchronized fun shutdown() { lockGeneration++; mesh.shutdown(); captureWriter.shutdown(); vault.lock() }
 }

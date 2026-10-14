@@ -1,6 +1,6 @@
 # CivicRelay — Android experimental starter
 
-**Status:** direct encrypted evidence transfer prototype source, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
+**Status:** encrypted evidence transfer and recovery/viewer prototype source, **NOT** a verified/emergency-ready application. No APK is supplied. Designed for private testing only until device testing, accessibility testing, independent crypto/security audit and incident-response procedures have been completed.
 
 ## What you get
 
@@ -21,7 +21,10 @@
 - **Reliability update:** a background packet cannot be processed after vault lock; encrypted-vault readers return immutable-by-convention JSON copies, and failed creation no longer leaves an unlocked partial state.
 - **Reliability update:** inbound Nearby packet sizes/rates are bounded per connection, connected peers and replay bursts are capped; app explains manual radio enabling. These are **not** anti-surveillance or full denial-of-service protections.
 - **Reliability update:** adding a trusted contact requires checking the displayed fingerprint and explicitly confirming comparison over another channel.
-- **New:** on-demand 1-hop Nearby recipient-encrypted evidence transfer only to directly authenticated trusted contacts; receiver must explicitly accept an offer. Shows progress and locally stores cryptographically verified recipient-app storage receipts. 50 MiB evidence size ceiling; no automatic or background transfer.
+- **Previous:** on-demand 1-hop Nearby recipient-encrypted evidence transfer only to directly authenticated trusted contacts; receiver must explicitly accept an offer. Shows progress and locally stores cryptographically verified recipient-app storage receipts. 50 MiB evidence size ceiling; no automatic or background transfer.
+- **New:** in-vault verified media viewer: AES-GCM authentication + SHA-256 validation before JPEG preview or video playback. Play back MP4 with Android MediaPlayer's in-memory MediaDataSource; no new internal plaintext video file.
+- **New:** imported evidence provenance labels, in-app viewing of trusted-contact received copies, and explicitly confirmed user-directed plaintext JPEG/MP4 export through Android's Storage Access Framework. The OS document picker locks the vault and a second unlocked confirmation is needed to complete the export.
+- **New:** bounded preview size, recognition of expected JPEG/MP4 signatures and unit tests for basic media policies; no claim of full media-parser security.
 - **Build support:** Windows build/install PowerShell scripts, optional GitHub Actions Android build workflow, and pure-JVM inbound traffic limiter and transfer-policy unit tests.
 
 ## What this code does NOT provide
@@ -29,13 +32,15 @@
 - No automatic person identification or police face matching. No government facial database scraper.
 - No guarantees against police access, compelled disclosure, compromised Android OS, physical destruction, uninstall or factory reset.
 - No reliably persistent recording while the app is locked or in the background.
-- Opt-in direct Nearby evidence transfers and manual export/import are included, but no multi-hop large-file relay, automatic background synchronization, playback, verified human review or permanent remote retention.
+- Opt-in direct Nearby evidence transfers and manual export/import are included, but no multi-hop large-file relay, automatic background synchronization, guaranteed file retention or independently verified human review. Playback and user-directed recovery/export exist, but are NOT certified secure.
 - No SMS transmission by the app itself, no automatic telephone calls, no cloud push. Cryptographically signed app-level SOS receipts exist; there are no human read receipts or guaranteed delivery routes.
 - No continuous location tracking. One location fix per SOS, when permitted and available; it reaches parents only when a route exists to their app or the user sends an SMS through their own SMS app.
 - No spam moderation, abuse-resistant Sybil defense, full replay defense or anonymous wireless transport. Radio observers can still detect nearby participation.
 - No device-level Android integration test or APK build was possible in the authoring environment. The new Nearby FILE protocol has **not** been device-validated. Must build, test and review before distribution.
 
 For direct sharing security, consent and device tests read **`docs/NEARBY_EVIDENCE_TRANSFER.md`**. For build checks and real-device tests, start with **`docs/BUILD_AND_RELIABILITY_CHECKLIST.md`** and the updated **`docs/WINDOWS_SETUP_AND_TESTING.md`**. For archive and receipt design, open **`docs/EVIDENCE_AND_RECEIPTS.md`**.
+
+For in-app viewer, import/recovery and plaintext export restrictions, see **`docs/EVIDENCE_VIEWING_AND_RECOVERY.md`**. A decrypted export is intentionally outside CivicRelay's vault security boundary.
 
 ## Prerequisites
 
@@ -87,6 +92,7 @@ This is a **learning/research prototype**. Never advise protesters, witnesses or
 - `docs/WINDOWS_SETUP_AND_TESTING.md` — Windows install/build/test commands and evidence copy workflow
 - `docs/EVIDENCE_AND_RECEIPTS.md` — encrypted archive and SOS receipt protocol
 - `docs/NEARBY_EVIDENCE_TRANSFER.md` — consented direct 1-hop encrypted evidence transfer protocol and threats
+- `docs/EVIDENCE_VIEWING_AND_RECOVERY.md` — authenticated in-memory viewer and recovery/export testing
 
 ## Copyright and licensing
 

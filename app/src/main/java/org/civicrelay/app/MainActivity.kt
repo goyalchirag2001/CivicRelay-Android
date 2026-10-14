@@ -39,12 +39,17 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.civicrelay.app.crypto.Crypto
 import org.civicrelay.app.media.CameraSession
 import org.civicrelay.app.media.ContactQr
 import org.civicrelay.app.media.ContactScanner
+import org.civicrelay.app.media.VerifiedPhotoPreview
+import org.civicrelay.app.media.VerifiedVideoPreview
+import org.civicrelay.app.storage.VerifiedEvidence
+import org.civicrelay.app.storage.EvidenceViewPolicy
 import org.json.JSONObject
 import java.io.File
 import java.text.DateFormat
@@ -86,6 +91,23 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var confirmPass by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf("SOS") }
     var exportPath by remember { mutableStateOf<String?>(null) }
+    var plainExportRequestedId by remember { mutableStateOf<String?>(null) }
+    var pendingPlainExport by remember { mutableStateOf<Pair<String, Uri>?>(null) }
+    val plainPhotoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/jpeg")) { uri ->
+        val id = plainExportRequestedId
+        plainExportRequestedId = null
+        if (id != null && uri != null) pendingPlainExport = id to uri
+    }
+    val plainVideoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("video/mp4")) { uri ->
+        val id = plainExportRequestedId
+        plainExportRequestedId = null
+        if (id != null && uri != null) pendingPlainExport = id to uri
+    }
+    fun chooseDecryptedDestination(id: String, kind: String) {
+        plainExportRequestedId = id
+        val name = "civicrelay-export-${id.take(8)}${EvidenceViewPolicy.fileExtension(kind)}"
+        if (kind == "photo") plainPhotoLauncher.launch(name) else plainVideoLauncher.launch(name)
+    }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val path = exportPath
         exportPath = null
@@ -177,6 +199,23 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             TextButton(onClick = { civic.lock(); passphrase = ""; tab = "SOS" }) { Text("Lock") }
         }
         Text(civic.notice, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodySmall)
+        if (pendingPlainExport != null) {
+            Text("A destination for DECRYPTED evidence was selected. After export, other apps or backups may access the file.",
+                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = !busy, onClick = {
+                    val pending = pendingPlainExport ?: return@Button
+                    // Clear the pending URI before running the operation; a failure is reported.
+                    pendingPlainExport = null
+                    execute { civic.exportVerifiedPlaintext(pending.first, pending.second) }
+                }) { Text("Finalize decrypted export") }
+                OutlinedButton(onClick = {
+                    val pending = pendingPlainExport
+                    pendingPlainExport = null
+                    if (pending != null) runCatching { activity.contentResolver.delete(pending.second, null, null) }
+                }) { Text("Cancel") }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("SOS", "Updates", "Evidence", "Incident", "Contacts", "Mesh").forEach { title ->
@@ -191,7 +230,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 "SOS" -> SosTab(civic, activity, ::execute)
                 "Updates" -> UpdatesTab(civic, ::execute)
                 "Evidence" -> EvidenceTab(civic, ::execute, ::exportEvidence,
-                    { importLauncher.launch(arrayOf("application/octet-stream", "application/zip", "*/*")) })
+                    { importLauncher.launch(arrayOf("application/octet-stream", "application/zip", "*/*")) },
+                    ::chooseDecryptedDestination)
                 "Incident" -> IncidentTab(civic, ::execute)
                 "Contacts" -> ContactsTab(civic, ::execute)
                 "Mesh" -> MeshTab(civic)
@@ -399,7 +439,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     civic: CivicService,
     execute: (() -> Unit) -> Unit,
     exportEvidence: (String, String) -> Unit,
-    chooseImport: () -> Unit
+    chooseImport: () -> Unit,
+    exportPlaintext: (String, String) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -408,6 +449,31 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
     var status by remember { mutableStateOf("") }
     var selectedKey by remember { mutableStateOf("") }
+    var opened by remember { mutableStateOf<VerifiedEvidence?>(null) }
+    var previewBusy by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf("") }
+    var confirmPlainExport by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val previewScope = rememberCoroutineScope()
+
+    // Screen disposal (including vault lock/background) releases verified plaintext in memory.
+    DisposableEffect(Unit) {
+        onDispose { opened?.close(); opened = null }
+    }
+
+    fun viewVerified(id: String) {
+        previewScope.launch {
+            previewBusy = true
+            previewError = ""
+            opened?.close()
+            opened = null
+            try {
+                val verified = withContext(Dispatchers.IO) { civic.openVerifiedEvidence(id) }
+                if (!isActive || !civic.vault.unlocked) verified.close()
+                else opened = verified
+            } catch (e: Exception) { previewError = "Cannot view evidence: ${e.localizedMessage}" }
+            finally { previewBusy = false }
+        }
+    }
 
     val camera = remember { CameraSession(context, { file, kind, ocr ->
         civic.persistCapturedMedia(file, kind, ocr)
@@ -468,9 +534,35 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
         }
         val media = civic.vault.records("media").take(20)
+        Text("Every preview is decrypted and SHA-256 verified. Viewing uses short-lived memory only; exported copies are NOT encrypted.",
+            style = MaterialTheme.typography.bodySmall)
+        if (previewBusy) CircularProgressIndicator()
+        if (previewError.isNotBlank()) Text(previewError, color = MaterialTheme.colorScheme.error)
+        val currentPreview = opened
+        if (currentPreview != null) {
+            HorizontalDivider()
+            Text("Integrity verified: ${currentPreview.sha256}", style = MaterialTheme.typography.labelSmall)
+            Text(if (currentPreview.importedFrom == null) "Original local evidence" else
+                "Recovered copy imported from trusted key ${currentPreview.importedFrom}")
+            when (currentPreview.kind) {
+                "photo" -> VerifiedPhotoPreview(currentPreview)
+                "video" -> VerifiedVideoPreview(currentPreview)
+            }
+            OutlinedButton(onClick = { opened?.close(); opened = null }) { Text("Close private viewer") }
+            HorizontalDivider()
+        }
         media.forEach { item ->
             RecordCard("${item.optString("kind")} • ${whenText(item.optLong("created"))}",
-                "SHA-256: ${item.optString("sha256")}\nOCR suggestion: ${item.optString("ocrSuggestion").take(180)}")
+                "SHA-256: ${item.optString("sha256")}\nOCR suggestion: ${item.optString("ocrSuggestion").take(180)}" +
+                if (item.has("importedFrom")) "\nRecovered from trusted contact" else "\nRecorded on this phone")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = !previewBusy, onClick = { viewVerified(item.getString("id")) }) {
+                    Text("Verify & view")
+                }
+                OutlinedButton(onClick = {
+                    confirmPlainExport = item.getString("id") to item.getString("kind")
+                }) { Text("Export decrypted copy") }
+            }
             Button(enabled = selectedKey.isNotBlank() && civic.mesh.active &&
                 direct.trustedEndpointFor(selectedKey), onClick = {
                 execute { civic.offerNearbyEvidence(item.getString("id"), selectedKey) }
@@ -506,6 +598,18 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         Text("A signed 'stored' receipt confirms only that the intended trusted app imported and verified the file. It is not proof someone viewed it or that the copy will remain available.",
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
+    val request = confirmPlainExport
+    if (request != null) AlertDialog(
+        onDismissRequest = { confirmPlainExport = null },
+        title = { Text("Export an UNENCRYPTED copy?") },
+        text = { Text("The destination file will be readable outside CivicRelay, possibly included in cloud backups or accessible to other apps. Only export to a location you control. Selecting a destination locks the vault; unlock again and finalize the export.") },
+        confirmButton = { TextButton(onClick = {
+            confirmPlainExport = null
+            opened?.close(); opened = null
+            exportPlaintext(request.first, request.second)
+        }) { Text("Choose destination") } },
+        dismissButton = { TextButton(onClick = { confirmPlainExport = null }) { Text("Cancel") } }
+    )
 }
 
 @Composable private fun MeshTab(civic: CivicService) {
