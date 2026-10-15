@@ -23,6 +23,7 @@ import com.google.android.gms.nearby.connection.Strategy
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** All discovery is explicitly started/stopped by the user. No background discovery service. */
 class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
@@ -33,7 +34,7 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                  private val onStored: (String, String) -> Unit) {
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     val evidence = DirectEvidence(context, client, identity, trusted, onImport, onStored)
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newSingleThreadScheduledExecutor()
     private val connected = LinkedHashSet<String>()
     private val attempted = HashSet<String>()
     private val limiter = IngressLimiter()
@@ -103,9 +104,11 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
                 if (!admitted) { client.disconnectFromEndpoint(endpointId); return }
                 status = "Sharing with $peerCount nearby device(s); delivery not guaranteed"
                 evidence.connected(endpointId)
-                // Bound replay volume per new connection. Previously queued traffic remains local.
-                pending().asSequence().filter { it.optInt("hops") > 0 }.take(32)
-                    .forEach { sendTo(endpointId, it) }
+                // Newest emergencies first: otherwise the first 32 older posts starve SOS.
+                replayTo(endpointId)
+                // A second bounded replay helps when the Nearby radio is busy handshaking.
+                executor.schedule({ if (active && synchronized(connected) { endpointId in connected })
+                    replayTo(endpointId) }, 3, TimeUnit.SECONDS)
             } else { attempted.remove(endpointId); diagnostics = "Connection rejected: code ${resolution.status.statusCode}"; status = diagnostics }
         }
         override fun onDisconnected(endpointId: String) {
@@ -184,14 +187,29 @@ class NearbyMesh(context: Context, private val onPacket: (JSONObject) -> Unit,
         synchronized(connected) { connected.toList() }.forEach { evidence.connected(it) }
     }
 
+    private fun replayTo(endpointId: String) {
+        val all = pending()
+        val priority = PacketReplayPolicy.select(all.map { PacketReplayPolicy.Item(
+            it.optString("id"), it.optString("type"), it.optLong("created"),
+            it.optLong("expires"), it.optInt("hops")) }, System.currentTimeMillis())
+        val packets = all.associateBy { it.optString("id") }
+        priority.forEach { item -> packets[item.id]?.let { sendTo(endpointId, it) } }
+    }
     fun broadcast(packet: JSONObject) {
         if (!active || packet.optInt("hops") <= 0) return
         synchronized(connected) { connected.toList() }.forEach { sendTo(it, packet) }
     }
-    private fun sendTo(endpointId: String, packet: JSONObject) {
+    private fun sendTo(endpointId: String, packet: JSONObject, retry: Int = 0) {
+        if (!active || !synchronized(connected) { endpointId in connected } ||
+            packet.optLong("expires") <= System.currentTimeMillis()) return
         val bytes = packet.toString().toByteArray(Charsets.UTF_8)
-        if (bytes.size <= 16_384) client.sendPayload(endpointId, Payload.fromBytes(bytes))
-            .addOnFailureListener { /* Retry when another connection is established */ }
+        if (bytes.size > 16_384) return
+        client.sendPayload(endpointId, Payload.fromBytes(bytes))
+            .addOnFailureListener {
+                if (retry < 2) executor.schedule({ sendTo(endpointId, packet, retry + 1) },
+                    if (retry == 0) 2 else 5, TimeUnit.SECONDS)
+                else diagnostics = "A radio send failed; message remains queued"
+            }
     }
     fun stop() {
         active = false

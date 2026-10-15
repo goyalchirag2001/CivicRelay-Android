@@ -1,3 +1,11 @@
+## 0.1.7-alpha — SOS quick action and contacts
+- Finalized user-selected logo added to launcher and header.
+- Separate encrypted parent/SMS contact list with user-reviewed SMS drafts.
+- Emergency-first Nearby replay, short bounded retries, SOS stays queued until signed app receipt.
+- Explicitly armed one-use emergency Quick Settings tile and notification action, limited to two-hour validity and without live GPS/SMS.
+- Biometric manifest permission, diagnostics, settings navigation and tests.
+- No hosted online synchronization; production safety assurance still pending.
+
 ## 0.1.6-alpha — navigation, community posting, location check-in and online architecture foundation (source only)
 - Null/exception-safe biometric capability check for More screen. Does not replace real Logcat diagnosis if crash persists.
 - Clearer Privacy/Public Profile/Tools page; Evidence Library/Camera/Share sections; improved media and public posting cards.

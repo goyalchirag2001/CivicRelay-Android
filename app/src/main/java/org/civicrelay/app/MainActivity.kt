@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -13,6 +14,7 @@ import android.hardware.biometrics.BiometricPrompt
 import android.hardware.biometrics.BiometricManager
 import android.widget.Toast
 import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.Image
 import android.os.SystemClock
 import android.location.Location
 import android.content.Intent
@@ -94,6 +96,29 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() { super.onDestroy() } // application owns CivicService
 
+    fun biometricStatus(): String {
+        if (Build.VERSION.SDK_INT < 30) return "Android 11 or newer is needed for this quick-unlock setup."
+        return try {
+            val manager = getSystemService(BiometricManager::class.java)
+                ?: return "Biometric manager unavailable on this phone."
+            when (manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
+                BiometricManager.BIOMETRIC_SUCCESS -> "Strong biometric ready"
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "No strong fingerprint enrolled in phone settings"
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "No strong biometric sensor on this device"
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "Fingerprint hardware is temporarily unavailable"
+                BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "Biometric sensor requires a security update"
+                else -> "Strong biometric unavailable or restricted by Android"
+            }
+        } catch (_: Exception) { "Could not check fingerprint hardware" }
+    }
+    fun openBiometricSettings() {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 30) startActivity(Intent(Settings.ACTION_BIOMETRIC_ENROLL).apply {
+                putExtra(Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            }) else startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
+        }.onFailure { Toast.makeText(this, "Open phone Settings → Security → Fingerprint", Toast.LENGTH_LONG).show() }
+    }
     fun canUseFingerprint(): Boolean {
         if (Build.VERSION.SDK_INT < 30) return false
         // Some OEM builds return null or throw while querying biometric hardware.
@@ -230,11 +255,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             MaterialTheme.colorScheme.surfaceVariant))).verticalScroll(rememberScrollState())
             .padding(horizontal = 22.dp, vertical = 30.dp),
             verticalArrangement = Arrangement.Center) {
-            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                Text("CR", Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
+            Image(painterResource(R.drawable.civicrelay_mark), contentDescription = "CivicRelay brand",
+                modifier = Modifier.size(92.dp))
             Spacer(Modifier.height(20.dp))
             Text("CivicRelay", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
             Text("Your evidence. Your trusted circle.",
@@ -297,6 +319,10 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Image(painterResource(R.drawable.civicrelay_mark), contentDescription = "CivicRelay logo",
+                            modifier = Modifier.size(42.dp))
                     Column {
                         Text("CivicRelay", style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
@@ -306,6 +332,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                         } else "Nearby off · Tap Nearby to connect",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     }
                     TextButton(onClick = { civic.lock(); passphrase = ""; tab = "SOS" }) {
                         Text("Lock vault")
@@ -435,8 +462,14 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                             Text("Enable fingerprint unlock")
                         }
                     }
-                } else Text("Fingerprint is unavailable on this device. Your passphrase still works.",
-                    style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text(activity.biometricStatus(), style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { activity.openBiometricSettings() },
+                        modifier = Modifier.fillMaxWidth()) { Text("Open phone fingerprint settings") }
+                    Text("CivicRelay needs a strong enrolled biometric for its encrypted vault key. " +
+                        "Some face-unlock and fingerprint sensors are classified as weak by Android.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
         listOf(
@@ -496,9 +529,10 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
     fun openManualSms(loc: Location?, source: String) {
         try {
+            val phone = SmsContactPolicy.normalize(smsPhone)
             val messageText = SmsDraft.build(message, loc?.latitude, loc?.longitude,
                 loc?.accuracy, source, smsIncludeLocation)
-            val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", smsPhone.trim(), null))
+            val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", phone, null))
                 .putExtra("sms_body", messageText)
             activity.startActivity(intent)
             smsStatus = if (loc == null && smsIncludeLocation) "Location unavailable; SMS draft says so explicitly" else
@@ -593,6 +627,31 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         Button(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth(),
             enabled = civic.vault.contacts().isNotEmpty()) { Text("Send protected SOS") }
         if (civic.vault.contacts().isEmpty()) Text("Add a trusted contact before sending an SOS.")
+        ElevatedCard(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Quick emergency shortcut", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold)
+                Text("Arm a one-time protected SOS while the vault is open. Then add the " +
+                    "CivicRelay SOS tile from Android Quick Settings. A tap can queue that pre-encrypted alert " +
+                    "without your passphrase. It has NO live GPS and does NOT send SMS. Expires in two hours.",
+                    style = MaterialTheme.typography.bodySmall)
+                Text(if (civic.emergency.ready()) "READY until ${whenText(civic.emergency.expiry())}"
+                     else "NOT ARMED", style = MaterialTheme.typography.labelMedium,
+                    color = if (civic.emergency.ready()) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error)
+                Button(onClick = { execute { civic.armQuickSos() } },
+                    enabled = civic.vault.contacts().isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                    Text("Arm emergency shortcut")
+                }
+                if (civic.emergency.ready()) OutlinedButton(onClick = { execute { civic.stopQuickSos() } }) {
+                    Text("Disarm shortcut")
+                }
+                Text("Alternative: Start Nearby and use SOS action in the Nearby notification. " +
+                    "Android's multi-press Power-button emergency shortcut cannot be overridden by this app.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
         Text("Queued is not delivered. Internet, SMS, and emergency-service calls are NOT initiated by this app.",
             color = MaterialTheme.colorScheme.error)
@@ -611,7 +670,21 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         HorizontalDivider()
         Text("Optional cellular SMS fallback", style = MaterialTheme.typography.titleMedium)
         Text("SMS does not need internet, but requires a working cellular network. It is NOT end-to-end encrypted; the phone carrier can see its contents.")
-        OutlinedTextField(smsPhone, { smsPhone = it.take(25) }, label = { Text("Parent's phone number (not saved)") }, modifier = Modifier.fillMaxWidth())
+        val savedSmsContacts = civic.vault.smsContacts()
+        if (savedSmsContacts.isEmpty()) Text("Save a parent's phone number under More → Trusted people → SMS contacts.",
+            style = MaterialTheme.typography.bodySmall)
+        else {
+            Text("Choose a saved SMS contact", style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                savedSmsContacts.forEach { (name, phone) ->
+                    FilterChip(selected = smsPhone == phone, onClick = { smsPhone = phone },
+                        label = { Text(name) })
+                }
+            }
+        }
+        OutlinedTextField(smsPhone, { smsPhone = it.take(25) },
+            label = { Text("SMS recipient number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(smsIncludeLocation, { smsIncludeLocation = it })
             Text("Include unencrypted coordinates in SMS (if permitted)")
@@ -735,6 +808,10 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var alias by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var fingerprintChecked by remember { mutableStateOf(false) }
+    var smsAlias by remember { mutableStateOf("") }
+    var smsNumber by remember { mutableStateOf("") }
+    var smsError by remember { mutableStateOf("") }
+    var smsConsent by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var scanning by remember { mutableStateOf(false) }
@@ -810,6 +887,42 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         civic.vault.contacts().forEach { (name, pub) ->
             RecordCard(name, "Fingerprint: ${Crypto.fingerprint(pub)}")
         }
+        HorizontalDivider()
+        Text("Parents & SMS emergency contacts", style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold)
+        Text("These phone numbers are stored encrypted in your vault. They are different " +
+            "from CivicRelay QR contacts. SMS needs cellular service and is not end-to-end encrypted.",
+            style = MaterialTheme.typography.bodySmall)
+        civic.vault.smsContacts().forEach { (name, phone) ->
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name, fontWeight = FontWeight.Bold)
+                        Text(phone, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { execute { civic.removeSmsContact(phone) } }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
+        OutlinedTextField(smsAlias, { smsAlias = it.take(48) }, label = { Text("Name (e.g. Parent)") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(smsNumber, { smsNumber = it.take(30) }, label = { Text("Phone number (+91…)") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(smsConsent, { smsConsent = it })
+            Text("I have permission to save and contact this person", style = MaterialTheme.typography.bodySmall)
+        }
+        Button(onClick = {
+            try {
+                val normalized = SmsContactPolicy.normalize(smsNumber)
+                execute { civic.addSmsContact(smsAlias, normalized) }
+                smsAlias = ""; smsNumber = ""; smsConsent = false; smsError = ""
+            } catch (ex: Exception) { smsError = ex.message ?: "Invalid phone number" }
+        }, enabled = smsConsent && smsAlias.isNotBlank() && smsNumber.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()) { Text("Save SMS contact") }
+        if (smsError.isNotBlank()) Text(smsError, color = MaterialTheme.colorScheme.error)
     }
 }
 

@@ -22,6 +22,7 @@ class CivicService(private val context: Context) {
     val vault = Vault(context)
     val biometrics = org.civicrelay.app.crypto.BiometricVaultKey(context)
     private val queue = RelayQueue(context)
+    val emergency = EmergencyArming(context)
     val mesh = NearbyMesh(context, ::receivePacket, queue::all,
         { if (vault.unlocked) PeerIdentity(vault.pub(), vault.privateKey()) else null },
         { key -> vault.unlocked && vault.contacts().any { it.second == key } },
@@ -39,6 +40,7 @@ class CivicService(private val context: Context) {
         val chars = passphrase.toCharArray()
         try { if (vault.exists) vault.unlock(chars) else vault.create(chars) }
         finally { chars.fill('\u0000') }
+        reconcileQuickSosHistory()
         replayPrivateInbox()
         mesh.refreshTrustedHandshakes()
         revision++
@@ -52,6 +54,7 @@ class CivicService(private val context: Context) {
         val (derived, salt) = biometrics.completeUnlock(cipher)
         try { vault.unlockDerived(derived, salt) }
         finally { derived.fill(0); salt.fill(0) }
+        reconcileQuickSosHistory()
         replayPrivateInbox()
         mesh.refreshTrustedHandshakes()
         revision++
@@ -70,6 +73,18 @@ class CivicService(private val context: Context) {
 
     @Synchronized fun disableBiometric() { biometrics.disable(); revision++ }
 
+    private fun reconcileQuickSosHistory() {
+        if (!vault.unlocked) return
+        val triggered = emergency.takeQueued() ?: return
+        if (vault.records("sosInbox").none { it.optString("id") == triggered.optString("id") }) {
+            vault.append("sosInbox", JSONObject().put("id", triggered.optString("id"))
+                .put("sender", "You").put("message", "Quick SOS (no live coordinates)")
+                .put("kind", "sos").put("location", "Unavailable")
+                .put("time", triggered.optLong("created"))
+                .put("status", "QUEUED_NOT_DELIVERED")
+                .put("recipientKeys", org.json.JSONArray(vault.contacts().map { it.second })))
+        }
+    }
     /** When locked, only bounded encrypted public relay storage/forwarding is allowed. */
     private fun replayPrivateInbox() {
         if (!vault.unlocked) return
@@ -150,9 +165,46 @@ class CivicService(private val context: Context) {
             }
         }
     }
+    @Synchronized fun armQuickSos() {
+        check(vault.unlocked) { "Unlock vault before arming SOS" }
+        val recipients = vault.contacts()
+        require(recipients.isNotEmpty()) { "Add a verified CivicRelay contact first" }
+        val body = JSONObject().put("message", "Pre-authorized emergency SOS from quick action. " +
+            "No current location is included. Contact the sender directly.")
+            .put("time", System.currentTimeMillis())
+        val packet = Envelope.compose("sos", body.toString(), vault.pub(), vault.privateKey(),
+            recipients.map { it.second })
+        emergency.arm(packet)
+        notice = "Quick SOS armed until ${java.util.Date(packet.getLong("expires"))}; no GPS or SMS."
+        revision++
+    }
+    @Synchronized fun stopQuickSos() { emergency.clear(); revision++ }
+    /** Works with vault locked, because only a pre-authorized encrypted envelope is used. */
+    @Synchronized fun triggerQuickSos(): Boolean {
+        val packet = emergency.consume() ?: return false
+        val accepted = queue.add(packet)
+        if (accepted) {
+            emergency.logQueued(packet)
+            mesh.broadcast(packet)
+        }
+        notice = if (accepted) "Quick SOS queued, not confirmed delivered. Unlock to inspect status."
+            else "Alert was already queued."
+        revision++
+        return accepted
+    }
+    @Synchronized fun addSmsContact(name: String, phone: String) {
+        vault.addSmsContact(name, phone)
+        revision++
+        notice = "SMS contact saved in your private vault. SMS itself is NOT encrypted."
+    }
+    @Synchronized fun removeSmsContact(phone: String) {
+        vault.removeSmsContact(phone)
+        revision++
+    }
     @Synchronized fun addContact(alias: String, code: String) {
         val key = code.trim().removePrefix("CRCONTACT1:")
         vault.addContact(alias, key)
+        emergency.clear() // Re-arm after updating trusted recipients.
         revision++
         notice = "Trusted key saved. Verify fingerprint with your contact in person."
     }

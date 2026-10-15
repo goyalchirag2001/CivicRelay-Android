@@ -62,11 +62,15 @@ class NearbyForegroundService : Service() {
         val stop = PendingIntent.getService(this, 1,
             Intent(this, NearbyForegroundService::class.java).setAction(STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val sos = PendingIntent.getBroadcast(this, 3,
+            Intent(this, EmergencyActionReceiver::class.java).setAction(EmergencyActionReceiver.ACTION),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("CivicRelay nearby is on")
             .setContentText("Offline sharing active · Tap to manage")
             .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_dialog_alert, "SOS (if armed)", sos)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .build()
         try {

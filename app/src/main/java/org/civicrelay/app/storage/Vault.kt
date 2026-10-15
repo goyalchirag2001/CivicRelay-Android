@@ -30,7 +30,7 @@ class Vault(private val context: Context) {
             .put("public", Crypto.b64(pair.public.encoded))
             .put("private", Crypto.b64(pair.private.encoded))
             .put("mediaKey", Crypto.b64(Crypto.randomBytes(32)))
-            .put("contacts", JSONArray()).put("bulletins", JSONArray())
+            .put("contacts", JSONArray()).put("smsContacts", JSONArray()).put("bulletins", JSONArray())
             .put("sosInbox", JSONArray()).put("incidents", JSONArray()).put("media", JSONArray())
             .put("transfers", JSONArray()).put("publicProfile", JSONObject())
         val localSalt = Crypto.randomBytes(16)
@@ -82,6 +82,38 @@ class Vault(private val context: Context) {
     @Synchronized fun contacts(): List<Pair<String, String>> = current().getJSONArray("contacts").let { a ->
         (0 until a.length()).map { i -> a.getJSONObject(i).getString("alias") to a.getJSONObject(i).getString("key") }
     }
+    /** Conventional SMS recipients are stored only inside the encrypted vault; never public profiles. */
+    @Synchronized fun smsContacts(): List<Pair<String, String>> =
+        (current().optJSONArray("smsContacts") ?: JSONArray()).let { array ->
+            (0 until array.length()).map { index ->
+                val item = array.getJSONObject(index)
+                item.getString("name") to item.getString("phone")
+            }
+        }
+
+    @Synchronized fun addSmsContact(name: String, rawPhone: String) {
+        val normalized = org.civicrelay.app.SmsContactPolicy.normalize(rawPhone)
+        require(name.trim().length in 1..48) { "Enter a contact name" }
+        val contacts = smsContacts()
+        require(contacts.size < 10) { "Ten SMS contacts maximum" }
+        require(contacts.none { it.second == normalized }) { "This phone number is saved already" }
+        val array = current().optJSONArray("smsContacts") ?: JSONArray()
+        array.put(JSONObject().put("name", name.trim()).put("phone", normalized))
+        current().put("smsContacts", array)
+        save()
+    }
+
+    @Synchronized fun removeSmsContact(phone: String) {
+        val original = current().optJSONArray("smsContacts") ?: return
+        val output = JSONArray()
+        for (i in 0 until original.length()) {
+            val item = original.getJSONObject(i)
+            if (item.optString("phone") != phone) output.put(item)
+        }
+        current().put("smsContacts", output)
+        save()
+    }
+
     @Synchronized fun publicProfile(): JSONObject =
         JSONObject((current().optJSONObject("publicProfile") ?: JSONObject()).toString())
 
@@ -232,7 +264,11 @@ class RelayQueue(context: Context) {
     @Synchronized private fun prune() {
         val now = System.currentTimeMillis()
         items.entries.removeAll { it.value.optLong("expires") < now }
-        while (items.size > 128) items.remove(items.keys.first())
+        while (items.size > 128) {
+            // Retain emergency packets before a backlog of public posts, with bounded storage.
+            val bulletinId = items.entries.firstOrNull { it.value.optString("type") == "bulletin" }?.key
+            items.remove(bulletinId ?: items.keys.first())
+        }
     }
     @Synchronized fun add(packet: JSONObject): Boolean {
         prune()

@@ -107,3 +107,7 @@ This is a **learning/research prototype**. Never advise protesters, witnesses or
 ## Background Nearby and quick unlock (0.1.5-alpha)
 
 Nearby now runs only after the user explicitly enables it and uses an Android connected-device foreground service, independent of private-vault locking. The vault locks two minutes after backgrounding, while optional strong Android fingerprint quick unlock can be enabled from More. For setup, privacy caveats and two-phone test cases read [`docs/BACKGROUND_NEARBY_AND_QUICK_UNLOCK.md`](docs/BACKGROUND_NEARBY_AND_QUICK_UNLOCK.md). This feature requires physical Android device validation.
+
+## New experimental urgent-alert controls
+
+See [Quick SOS, SMS contacts and relay priority](docs/QUICK_SOS_AND_CONTACTS.md). This source remains an experimental prototype and is not a guaranteed emergency service.
