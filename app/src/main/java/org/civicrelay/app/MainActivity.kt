@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ComponentName
+import android.app.StatusBarManager
+import android.graphics.drawable.Icon
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.os.Build
@@ -95,6 +98,35 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
     override fun onDestroy() { super.onDestroy() } // application owns CivicService
+
+    /** Android 13+ can offer a one-tap tile installation prompt; older phones use manual Edit Tiles. */
+    fun requestQuickSosTile(result: (String) -> Unit) {
+        if (Build.VERSION.SDK_INT < 33) {
+            result("Swipe down twice → Edit (pencil) → add CivicRelay SOS to Quick Settings.")
+            return
+        }
+        try {
+            val statusBar = getSystemService(StatusBarManager::class.java)
+            if (statusBar == null) {
+                result("Quick Settings service unavailable. Add CivicRelay SOS manually from Edit Tiles.")
+                return
+            }
+            statusBar.requestAddTileService(
+                ComponentName(this, EmergencyTileService::class.java),
+                "CivicRelay SOS", Icon.createWithResource(this, R.drawable.ic_civic_sos),
+                mainExecutor
+            ) { response ->
+                result(when (response) {
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> "Shortcut added. Test with a paired phone and synthetic SOS."
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> "SOS tile is already in Quick Settings."
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_NOT_ADDED -> "Shortcut wasn't added. Open Quick Settings → Edit to add it."
+                    else -> "Android didn't add the tile ($response). Try Quick Settings → Edit manually."
+                })
+            }
+        } catch (failure: Exception) {
+            result("Tile setup unavailable: ${failure.localizedMessage ?: "Android blocked the request"}. Add it manually using Edit Tiles.")
+        }
+    }
 
     fun biometricStatus(): String {
         if (Build.VERSION.SDK_INT < 30) return "Android 11 or newer is needed for this quick-unlock setup."
@@ -190,6 +222,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var passphrase by remember { mutableStateOf("") }
     var confirmPass by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf("SOS") }
+    var preferredSmsPhone by remember { mutableStateOf("") }
     var exportPath by remember { mutableStateOf<String?>(null) }
     var plainExportRequestedId by remember { mutableStateOf<String?>(null) }
     var pendingPlainExport by remember { mutableStateOf<Pair<String, Uri>?>(null) }
@@ -350,7 +383,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                     Triple("More", R.drawable.ic_civic_more, "More")
                 ).forEach { (section, image, label) ->
                     NavigationBarItem(
-                        selected = if (section == "More") tab in listOf("More", "Incident", "Contacts", "SafetyMap") else tab == section,
+                        selected = if (section == "More") tab in listOf("More", "Incident", "Contacts", "SmsContacts", "SafetyMap") else tab == section,
                         onClick = { tab = section },
                         icon = { Icon(painterResource(image), contentDescription = label, modifier = Modifier.size(21.dp)) },
                         label = { Text(label) }, alwaysShowLabel = true
@@ -384,18 +417,21 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
             if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
-            if (tab in setOf("Contacts", "Incident", "SafetyMap")) {
+            if (tab in setOf("Contacts", "SmsContacts", "Incident", "SafetyMap")) {
                 TextButton(onClick = { tab = "More" }) { Text("← Back to tools") }
             }
             key(tab) {
                 when (tab) {
-                    "SOS" -> SosTab(civic, activity, ::execute)
+                    "SOS" -> SosTab(civic, activity, ::execute, preferredSmsPhone,
+                        onManageSms = { tab = "SmsContacts" }, onManageAppContacts = { tab = "Contacts" })
                     "Updates" -> UpdatesTab(civic, ::execute)
                     "Evidence" -> EvidenceTab(civic, ::execute, ::exportEvidence,
                         { importLauncher.launch(arrayOf("application/octet-stream", "application/zip", "*/*")) },
                         ::chooseDecryptedDestination)
                     "Incident" -> IncidentTab(civic, ::execute)
                     "Contacts" -> ContactsTab(civic, ::execute)
+                    "SmsContacts" -> org.civicrelay.app.ui.SmsContactsScreen(civic,
+                        onUseForSms = { phone -> preferredSmsPhone = phone; tab = "SOS" })
                     "Mesh" -> MeshTab(civic)
                     "SafetyMap" -> SafetyMapTab(civic, ::execute)
                     else -> MoreTab(civic, activity) { tab = it }
@@ -473,7 +509,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
         }
         listOf(
-            Triple("Contacts", "Trusted people", "Pair a contact for private SOS and evidence sharing"),
+            Triple("Contacts", "CivicRelay trusted people", "Pair another app for encrypted SOS and evidence sharing"),
+            Triple("SmsContacts", "Parents & SMS contacts", "Save phone numbers for manual emergency text messages"),
             Triple("Incident", "Record an incident", "Keep witness notes and badge details encrypted"),
             Triple("SafetyMap", "Detention reports map", "Privacy-protected area summaries, never an individual tracking map")
         ).forEach { (route, title, description) ->
@@ -493,7 +530,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
 }
 
-@Composable private fun SosTab(civic: CivicService, activity: MainActivity, execute: (() -> Unit) -> Unit) {
+@Composable private fun SosTab(civic: CivicService, activity: MainActivity, execute: (() -> Unit) -> Unit,
+    preferredSmsPhone: String, onManageSms: () -> Unit, onManageAppContacts: () -> Unit) {
     var message by remember { mutableStateOf("I need assistance. This is an emergency alert.") }
     var includeLocation by remember { mutableStateOf(true) }
     var confirm by remember { mutableStateOf(false) }
@@ -502,6 +540,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var checkinStatus by remember { mutableStateOf("") }
     var checkinConfirm by remember { mutableStateOf(false) }
     var smsPhone by remember { mutableStateOf("") }
+    LaunchedEffect(preferredSmsPhone) { if (preferredSmsPhone.isNotBlank()) smsPhone = preferredSmsPhone }
     var smsIncludeLocation by remember { mutableStateOf(true) }
     var smsStatus by remember { mutableStateOf("") }
     var awaitingSmsLocationPermission by remember { mutableStateOf(false) }
@@ -631,10 +670,19 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Quick emergency shortcut", style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold)
-                Text("Arm a one-time protected SOS while the vault is open. Then add the " +
-                    "CivicRelay SOS tile from Android Quick Settings. A tap can queue that pre-encrypted alert " +
-                    "without your passphrase. It has NO live GPS and does NOT send SMS. Expires in two hours.",
+                Text("1. Pair a CivicRelay trusted person. 2. Arm the one-time SOS. " +
+                    "3. Add the SOS shortcut to Quick Settings. 4. Keep Nearby sharing active " +
+                    "and tap the tile to queue it. It is NOT an automatic SMS or live GPS alert.",
                     style = MaterialTheme.typography.bodySmall)
+                if (civic.vault.contacts().isEmpty()) {
+                    Text("No CivicRelay recipient yet. SMS phone numbers do NOT count as encrypted-app contacts.",
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = onManageAppContacts, modifier = Modifier.fillMaxWidth()) {
+                        Text("Pair a CivicRelay contact")
+                    }
+                }
+                if (!civic.mesh.active) Text("Nearby sharing is off. The tile can queue an alert, but it cannot reach a peer until a route is available.",
+                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 Text(if (civic.emergency.ready()) "READY until ${whenText(civic.emergency.expiry())}"
                      else "NOT ARMED", style = MaterialTheme.typography.labelMedium,
                     color = if (civic.emergency.ready()) MaterialTheme.colorScheme.primary
@@ -643,6 +691,13 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                     enabled = civic.vault.contacts().isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
                     Text("Arm emergency shortcut")
                 }
+                var tileInstallStatus by remember { mutableStateOf("") }
+                OutlinedButton(onClick = { activity.requestQuickSosTile { tileInstallStatus = it } },
+                    modifier = Modifier.fillMaxWidth()) { Text("Add SOS shortcut to Quick Settings") }
+                if (tileInstallStatus.isNotBlank()) Text(tileInstallStatus, style = MaterialTheme.typography.bodySmall)
+                Text("Quick SOS is one-time: arm again after triggering or expiry. " +
+                    "It queues encrypted data but never guarantees delivery. Test first with invented details.",
+                    style = MaterialTheme.typography.labelSmall)
                 if (civic.emergency.ready()) OutlinedButton(onClick = { execute { civic.stopQuickSos() } }) {
                     Text("Disarm shortcut")
                 }
@@ -671,7 +726,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         Text("Optional cellular SMS fallback", style = MaterialTheme.typography.titleMedium)
         Text("SMS does not need internet, but requires a working cellular network. It is NOT end-to-end encrypted; the phone carrier can see its contents.")
         val savedSmsContacts = civic.vault.smsContacts()
-        if (savedSmsContacts.isEmpty()) Text("Save a parent's phone number under More → Trusted people → SMS contacts.",
+        if (savedSmsContacts.isEmpty()) Text("No SMS recipients saved yet. Add a parent or trusted number below.",
             style = MaterialTheme.typography.bodySmall)
         else {
             Text("Choose a saved SMS contact", style = MaterialTheme.typography.labelLarge)
@@ -682,6 +737,9 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                         label = { Text(name) })
                 }
             }
+        }
+        FilledTonalButton(onClick = onManageSms, modifier = Modifier.fillMaxWidth()) {
+            Text(if (savedSmsContacts.isEmpty()) "Add a parent or SMS contact" else "Manage saved SMS contacts")
         }
         OutlinedTextField(smsPhone, { smsPhone = it.take(25) },
             label = { Text("SMS recipient number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -808,10 +866,6 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var alias by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var fingerprintChecked by remember { mutableStateOf(false) }
-    var smsAlias by remember { mutableStateOf("") }
-    var smsNumber by remember { mutableStateOf("") }
-    var smsError by remember { mutableStateOf("") }
-    var smsConsent by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var scanning by remember { mutableStateOf(false) }
@@ -887,42 +941,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         civic.vault.contacts().forEach { (name, pub) ->
             RecordCard(name, "Fingerprint: ${Crypto.fingerprint(pub)}")
         }
-        HorizontalDivider()
-        Text("Parents & SMS emergency contacts", style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold)
-        Text("These phone numbers are stored encrypted in your vault. They are different " +
-            "from CivicRelay QR contacts. SMS needs cellular service and is not end-to-end encrypted.",
-            style = MaterialTheme.typography.bodySmall)
-        civic.vault.smsContacts().forEach { (name, phone) ->
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(name, fontWeight = FontWeight.Bold)
-                        Text(phone, style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = { execute { civic.removeSmsContact(phone) } }) {
-                        Text("Remove")
-                    }
-                }
-            }
-        }
-        OutlinedTextField(smsAlias, { smsAlias = it.take(48) }, label = { Text("Name (e.g. Parent)") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(smsNumber, { smsNumber = it.take(30) }, label = { Text("Phone number (+91…)") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(smsConsent, { smsConsent = it })
-            Text("I have permission to save and contact this person", style = MaterialTheme.typography.bodySmall)
-        }
-        Button(onClick = {
-            try {
-                val normalized = SmsContactPolicy.normalize(smsNumber)
-                execute { civic.addSmsContact(smsAlias, normalized) }
-                smsAlias = ""; smsNumber = ""; smsConsent = false; smsError = ""
-            } catch (ex: Exception) { smsError = ex.message ?: "Invalid phone number" }
-        }, enabled = smsConsent && smsAlias.isNotBlank() && smsNumber.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()) { Text("Save SMS contact") }
-        if (smsError.isNotBlank()) Text(smsError, color = MaterialTheme.colorScheme.error)
+
     }
 }
 

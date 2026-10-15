@@ -19,7 +19,7 @@ class EmergencyArming(context: Context) {
         try { output.write(packet.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(output) }
         catch (e: Exception) { file.failWrite(output); throw e }
     }
-    @Synchronized fun clear() { file.baseFile.delete() }
+    @Synchronized fun clear() { file.delete() }
     @Synchronized fun logQueued(packet: JSONObject) {
         val data = JSONObject().put("id", packet.getString("id"))
             .put("created", System.currentTimeMillis())
@@ -29,10 +29,12 @@ class EmergencyArming(context: Context) {
     }
     @Synchronized fun takeQueued(): JSONObject? = try {
         JSONObject(triggerLog.openRead().bufferedReader().use { it.readText() }).also {
-            triggerLog.baseFile.delete()
+            triggerLog.delete()
         }
     } catch (_: Exception) { null }
     @Synchronized fun ready(): Boolean = load() != null
+    /** Do not consume the only authorized emergency packet until it is durably queued. */
+    @Synchronized fun peek(): JSONObject? = load()?.let { JSONObject(it.toString()) }
     @Synchronized fun expiry(): Long = load()?.optLong("expires") ?: 0L
     @Synchronized fun consume(): JSONObject? {
         val packet = load() ?: return null

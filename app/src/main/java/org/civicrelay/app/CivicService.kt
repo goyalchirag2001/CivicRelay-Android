@@ -175,20 +175,38 @@ class CivicService(private val context: Context) {
         val packet = Envelope.compose("sos", body.toString(), vault.pub(), vault.privateKey(),
             recipients.map { it.second })
         emergency.arm(packet)
+        requestTileRefresh()
         notice = "Quick SOS armed until ${java.util.Date(packet.getLong("expires"))}; no GPS or SMS."
         revision++
     }
-    @Synchronized fun stopQuickSos() { emergency.clear(); revision++ }
+    @Synchronized fun stopQuickSos() { emergency.clear(); requestTileRefresh(); revision++ }
+    private fun requestTileRefresh() {
+        runCatching {
+            android.service.quicksettings.TileService.requestListeningState(context,
+                android.content.ComponentName(context, EmergencyTileService::class.java))
+        }
+    }
     /** Works with vault locked, because only a pre-authorized encrypted envelope is used. */
     @Synchronized fun triggerQuickSos(): Boolean {
-        val packet = emergency.consume() ?: return false
-        val accepted = queue.add(packet)
-        if (accepted) {
-            emergency.logQueued(packet)
-            mesh.broadcast(packet)
+        val packet = emergency.peek() ?: run {
+            notice = "SOS is not armed or has expired. Unlock the app to prepare another."
+            revision++
+            return false
         }
-        notice = if (accepted) "Quick SOS queued, not confirmed delivered. Unlock to inspect status."
-            else "Alert was already queued."
+        val accepted = runCatching { queue.add(packet) }.getOrElse {
+            notice = "Couldn't queue SOS. Armed alert retained; try again."
+            revision++
+            return false
+        }
+        if (accepted) {
+            runCatching { emergency.logQueued(packet) }
+            // Best effort immediate send; the durable queue remains authoritative if radio fails.
+            runCatching { mesh.broadcast(packet) }
+            emergency.clear()
+            requestTileRefresh()
+        }
+        notice = if (accepted) "Quick SOS queued; no confirmed delivery yet."
+            else "SOS already in the queue; no new alert was sent."
         revision++
         return accepted
     }

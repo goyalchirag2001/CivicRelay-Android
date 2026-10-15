@@ -10,8 +10,8 @@ android {
         applicationId = "org.civicrelay.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.1.7-alpha"
+        versionCode = 9
+        versionName = "0.1.8-alpha"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {

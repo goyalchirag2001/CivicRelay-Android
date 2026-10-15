@@ -16,7 +16,9 @@ class EmergencyTileService : TileService() {
     }
     override fun onClick() {
         super.onClick()
-        val sent = (application as CivicRelayApp).civic.triggerQuickSos()
+        val sent = runCatching {
+            (application as CivicRelayApp).civic.triggerQuickSos()
+        }.getOrDefault(false)
         qsTile?.let { tile ->
             tile.label = if (sent) "SOS queued" else "Open app to arm SOS"
             tile.state = Tile.STATE_INACTIVE
