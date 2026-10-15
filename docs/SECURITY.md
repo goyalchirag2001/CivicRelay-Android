@@ -8,8 +8,8 @@
 - Media encrypted after CameraX finalization using fresh per-file AES keys and a plaintext SHA-256 integrity digest; temporary plaintext period remains.
 - `FLAG_SECURE` inhibits common Android screenshots and recent-app preview capture; it does NOT stop photography of the screen or malicious OS access.
 - Per-SOS recipient encryption and persistent-sender signature proof hidden inside ciphertext; fresh ephemeral outer signing identity and anonymous recipient slots.
-- Signed ephemeral-pseudonym bulletin posts, TTL, signed content validation, maximum small payload size, bounded relay queue.
-- Explicit discovery toggle, lock when app is backgrounded, no server endpoint, no INTERNET permission.
+- Signed public bulletin envelopes; when user explicitly configures a public profile, a separate stable posting identity signs profile-associated content, TTL, signed content validation, maximum small payload size, bounded relay queue.
+- Explicit discovery toggle, independent foreground Nearby service, no server endpoint, no INTERNET permission. The locked vault cannot process private inbox content until unlocked.
 - Camera OCR is on-device and makes no identity claim.
 - Opt-in, recipient-encrypted portable evidence copies; trusted-contact signature check and two hash checks on import. This is manual copying, not deletion resistance.
 - Signed, recipient-encrypted app-level SOS acknowledgment messages; no guaranteed reverse path or proof the recipient has read the alert.
@@ -18,7 +18,7 @@
 
 - **Phone seized while unlocked**: an adversary with the screen unlocked can read material visible in the app; root/forensic/OS exploits and coercion defeat app-only controls.
 - **Temp media**: files exist unencrypted in a private cache until CameraX finalization, OCR, and encryption. Deleting a file is not secure erasure on flash storage. Android may store media or audio buffers in other memory or system components.
-- **Background interruption**: auto-lock stops discovery, and interrupting video can lose evidence, leave a short-lived temp file or prevent successful encryption. Cleanup attempts do not guarantee secure erasure.
+- **Background interruption**: auto-lock no longer intentionally stops Nearby, but Android may stop the foreground service; interrupting video can lose evidence, leave a short-lived temp file or prevent successful encryption. Cleanup attempts do not guarantee secure erasure.
 - **Capture data survival**: app data can be erased through uninstall, factory reset, storage corruption or destruction. Real evidence resilience requires at least two independently controlled encrypted copies.
 - **Loss of device or forgotten passphrase**: no recovery because hardware key is device-bound; backups are disabled.
 - **Metadata / traffic analysis**: nearby participants, packet sizes/times, and radio activity remain observable. Public posts intentionally spread openly; relay packets persist as metadata-bearing files.
@@ -48,3 +48,7 @@ Capture **visible, user-observed** nameplate, badge, unit, time, location and wi
 - Camera cancellation/temporary-file cleanup is best effort; Android flash memory and interrupted recordings cannot be relied upon for cryptographic erasure. Content is not capture-time encrypted.
 - Fingerprint confirmation remains self-attested; the UI cannot ensure a user truly compared it over an independent trusted channel.
 - The imported encrypted vault is local-only and device-key-bound. There is no centrally recoverable administrator password.
+
+## Public profiles and map safety
+
+Public display names, roles and regions are SELF-ASSERTED even when the posting key signature verifies. A stable posting key correlates posts; it is separate from the SOS identity but public sharing can still disclose identity. Local encrypted detention reports must never silently appear on a public map. Delayed coarse aggregation is a **future** feature requiring moderation, identity/abuse controls and careful review. Exact private check-ins must not be uploaded unencrypted to an online service.

@@ -73,7 +73,7 @@ class CivicService(private val context: Context) {
     /** When locked, only bounded encrypted public relay storage/forwarding is allowed. */
     private fun replayPrivateInbox() {
         if (!vault.unlocked) return
-        queue.all().filter { it.optString("type") in setOf("sos", "receipt") }
+        queue.all().filter { it.optString("type") in setOf("sos", "receipt", "checkin") }
             .takeLast(150).forEach { processPrivate(it) }
     }
 
@@ -81,13 +81,14 @@ class CivicService(private val context: Context) {
         if (!vault.unlocked || !Envelope.valid(packet)) return
         try {
             when (packet.getString("type")) {
-                "sos" -> {
-                    val clear = Envelope.tryOpenSos(packet, vault.privateKey()) ?: return
+                "sos", "checkin" -> {
+                    val clear = Envelope.tryOpenPrivate(packet, vault.privateKey()) ?: return
                     val trusted = vault.contacts().find { it.second == clear.senderPublicKey } ?: return
                     if (vault.records("sosInbox").any { it.optString("id") == packet.optString("id") }) return
                     val body = JSONObject(clear.body)
                     vault.append("sosInbox", JSONObject().put("id", packet.getString("id"))
                         .put("sender", trusted.first).put("message", body.optString("message"))
+                        .put("kind", packet.optString("type"))
                         .put("location", if (body.has("latitude"))
                             "${body.optDouble("latitude")},${body.optDouble("longitude")}" else "Unavailable")
                         .put("time", body.optLong("time")).put("status", "RECEIVED_ON_THIS_DEVICE"))
@@ -156,15 +157,35 @@ class CivicService(private val context: Context) {
         notice = "Trusted key saved. Verify fingerprint with your contact in person."
     }
     fun contactCode(): String = "CRCONTACT1:${vault.pub()}"
-    @Synchronized fun post(text: String) {
+    @Synchronized fun savePublicProfile(name: String, role: String, region: String) {
+        vault.savePublicProfile(name, role, region)
+        revision++
+        notice = "Posting profile saved locally. Future public posts include these details."
+    }
+    @Synchronized fun post(text: String, category: String = "Community") {
         val trimmed = text.trim()
         require(trimmed.isNotEmpty() && trimmed.length <= 280)
         val now = System.currentTimeMillis()
         require(now - lastPost >= 20_000) { "Please wait before posting again" }
-        val p = Envelope.compose("bulletin", trimmed, vault.pub(), vault.privateKey(), emptyList())
+        require(category in setOf("Community", "Safety", "Help"))
+        val profile = vault.publicProfile()
+        val displayName = profile.optString("name").trim()
+        require(displayName.length in 2..48) { "Set a public display name in More before posting" }
+        val body = JSONObject().put("v", 1).put("text", trimmed).put("displayName", displayName)
+            .put("role", profile.optString("role").take(32)).put("region", profile.optString("region").take(40))
+            .put("category", category)
+        val (postingPublic, postingPrivate) = vault.postingIdentity()
+        val serializedBody = body.toString()
+        val signedPost = JSONObject().put("v", 2).put("body", serializedBody)
+            .put("authorPub", postingPublic)
+            .put("authorSig", Crypto.sign(postingPrivate, ("CR-PUBLIC-v2|" + serializedBody).toByteArray(Charsets.UTF_8)))
+        val p = Envelope.compose("bulletin", signedPost.toString(), vault.pub(), vault.privateKey(), emptyList())
         queue.add(p)
         vault.append("bulletins", JSONObject().put("text", trimmed).put("id", p.getString("id"))
-            .put("sender", "You").put("time", now).put("unverified", true))
+            .put("sender", "You").put("time", now).put("unverified", true)
+            .put("displayName", displayName).put("role", profile.optString("role"))
+            .put("region", profile.optString("region")).put("category", category)
+            .put("postingKeySignatureVerified", true))
         mesh.broadcast(p)
         lastPost = now; revision++
         notice = "Update saved and offered to connected peers; not globally delivered."
@@ -182,12 +203,35 @@ class CivicService(private val context: Context) {
         queue.add(packet)
         vault.append("sosInbox", JSONObject().put("id", packet.getString("id")).put("message", message).put("sender", "You")
             .put("location", if (latitude != null) "$latitude,$longitude" else "Unavailable")
-            .put("time", System.currentTimeMillis()).put("status", "QUEUED_NOT_DELIVERED")
+            .put("time", System.currentTimeMillis()).put("kind", "sos")
+            .put("status", "QUEUED_NOT_DELIVERED")
             .put("recipientKeys", org.json.JSONArray(contacts.map { it.second })))
         mesh.broadcast(packet)
         revision++
         notice = "SOS encrypted and queued. A trusted contact app may return an encrypted receipt when a route exists."
     }
+    /** A separate, explicit consent action. Only verified contacts can decrypt. */
+    @Synchronized fun sendLocationCheckIn(latitude: Double, longitude: Double, accuracy: Float?) {
+        require(latitude in -90.0..90.0 && longitude in -180.0..180.0)
+        val recipients = vault.contacts()
+        require(recipients.isNotEmpty()) { "Add a trusted contact first" }
+        val now = System.currentTimeMillis()
+        val content = JSONObject().put("message", "Voluntary location check-in")
+            .put("time", now).put("latitude", latitude).put("longitude", longitude)
+        if (accuracy != null && accuracy.isFinite()) content.put("accuracyMeters", accuracy.toDouble())
+        val packet = Envelope.compose("checkin", content.toString(), vault.pub(),
+            vault.privateKey(), recipients.map { it.second })
+        queue.add(packet)
+        vault.append("sosInbox", JSONObject().put("id", packet.getString("id"))
+            .put("sender", "You").put("message", "Voluntary location check-in")
+            .put("kind", "checkin").put("location", "$latitude,$longitude")
+            .put("time", now).put("status", "QUEUED_NOT_DELIVERED")
+            .put("recipientKeys", org.json.JSONArray(recipients.map { it.second })))
+        mesh.broadcast(packet)
+        revision++
+        notice = "Location check-in encrypted for trusted contacts. It may remain queued if no route exists."
+    }
+
     @Synchronized private fun receivePacket(packet: JSONObject) {
         if (!Envelope.valid(packet)) return
         val remaining = packet.optInt("hops") - 1
@@ -200,12 +244,33 @@ class CivicService(private val context: Context) {
                 when (packet.optString("type")) {
                     "bulletin" -> {
                         val body = Envelope.readBulletin(packet)
-                        vault.append("bulletins", JSONObject().put("text", body)
+                        val envelope = runCatching { JSONObject(body) }.getOrNull()
+                        // Older text bulletins are displayed without claimed identity.
+                        val isSignedProfile = envelope?.optInt("v") == 2
+                        val posted = if (isSignedProfile) {
+                            val signedBody = envelope!!.getString("body")
+                            val authorKey = envelope.getString("authorPub")
+                            val signature = envelope.getString("authorSig")
+                            check(Crypto.verify(Crypto.publicKey(authorKey),
+                                ("CR-PUBLIC-v2|" + signedBody).toByteArray(Charsets.UTF_8), signature)) {
+                                "Invalid public posting signature"
+                            }
+                            JSONObject(signedBody)
+                        } else null
+                        val content = posted?.optString("text") ?: body
+                        val signingKey = if (isSignedProfile) envelope!!.getString("authorPub")
+                            else packet.getString("sender")
+                        vault.append("bulletins", JSONObject().put("text", content.take(280))
                             .put("id", packet.getString("id"))
-                            .put("sender", Crypto.fingerprint(packet.getString("sender")).take(12))
-                            .put("time", packet.getLong("created")).put("unverified", true))
+                            .put("sender", Crypto.fingerprint(signingKey).take(12))
+                            .put("displayName", posted?.optString("displayName", "")?.take(48) ?: "")
+                            .put("role", posted?.optString("role", "")?.take(32) ?: "")
+                            .put("region", posted?.optString("region", "")?.take(40) ?: "")
+                            .put("category", posted?.optString("category", "Community") ?: "Community")
+                            .put("time", packet.getLong("created")).put("unverified", true)
+                            .put("postingKeySignatureVerified", isSignedProfile))
                     }
-                    "sos", "receipt" -> processPrivate(packet)
+                    "sos", "receipt", "checkin" -> processPrivate(packet)
                 }
             } catch (_: Exception) { }
         }

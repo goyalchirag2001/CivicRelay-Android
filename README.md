@@ -1,3 +1,5 @@
+> **Build note (2026-10-15):** Experimental source update v0.1.6-alpha adds a guarded More/Privacy screen, clearer Evidence layout, optional signed public posting profiles, one-time recipient-encrypted location check-ins, and a future privacy-map policy. **Online remote sync, public identity verification, and a live map are NOT implemented or deployed.** See `docs/ONLINE_SYNC_IDENTITY_AND_SAFETY_MAP.md`. Full Android build/device testing is pending for this version.
+
 **Latest repair (0.1.5-alpha):** [Nearby connections, QR contacts, SMS location, modern UI and phone test guide](docs/PHONE_DISCOVERY_AND_UI_REPAIR.md).
 
 # CivicRelay — Android experimental starter

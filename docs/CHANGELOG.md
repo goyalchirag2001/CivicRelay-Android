@@ -1,3 +1,12 @@
+## 0.1.6-alpha — navigation, community posting, location check-in and online architecture foundation (source only)
+- Null/exception-safe biometric capability check for More screen. Does not replace real Logcat diagnosis if crash persists.
+- Clearer Privacy/Public Profile/Tools page; Evidence Library/Camera/Share sections; improved media and public posting cards.
+- Public profile saved inside encrypted vault; separate long-lived pseudonymous posting key signs public named updates (not legal ID verification).
+- One-time explicit trusted-recipient encrypted location check-in, distinct from SOS; no background tracking or online delivery.
+- Private detention area notes; future public map policy gated behind multiple distinct signatures, moderation, 30-minute delay and coarse cells.
+- Future Azure online architecture documented; no resources deployed, no INTERNET permission in app.
+- Requires full Gradle Android build, tests, and real-device verification.
+
 ## 0.1.4-alpha — Connectivity, QR, SMS, UI repair
 
 - Split Nearby radio discovery into explicit advertiser / discoverer roles for two-phone tests, with errors, discovery counts and connection diagnostics.

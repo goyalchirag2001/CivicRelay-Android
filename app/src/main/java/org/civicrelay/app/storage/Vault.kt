@@ -32,7 +32,7 @@ class Vault(private val context: Context) {
             .put("mediaKey", Crypto.b64(Crypto.randomBytes(32)))
             .put("contacts", JSONArray()).put("bulletins", JSONArray())
             .put("sosInbox", JSONArray()).put("incidents", JSONArray()).put("media", JSONArray())
-            .put("transfers", JSONArray())
+            .put("transfers", JSONArray()).put("publicProfile", JSONObject())
         val localSalt = Crypto.randomBytes(16)
         val localKey = Crypto.derive(passphrase, localSalt)
         salt = localSalt; key = localKey; state = newState
@@ -82,6 +82,29 @@ class Vault(private val context: Context) {
     @Synchronized fun contacts(): List<Pair<String, String>> = current().getJSONArray("contacts").let { a ->
         (0 until a.length()).map { i -> a.getJSONObject(i).getString("alias") to a.getJSONObject(i).getString("key") }
     }
+    @Synchronized fun publicProfile(): JSONObject =
+        JSONObject((current().optJSONObject("publicProfile") ?: JSONObject()).toString())
+
+    /** Separate pseudonymous posting identity: never reuse the SOS/contact key. */
+    @Synchronized fun postingIdentity(): Pair<String, PrivateKey> {
+        val data = current()
+        if (!data.has("postingPublic") || !data.has("postingPrivate")) {
+            val keys = Crypto.rsaKeyPair()
+            data.put("postingPublic", Crypto.b64(keys.public.encoded))
+                .put("postingPrivate", Crypto.b64(keys.private.encoded))
+            save()
+        }
+        return data.getString("postingPublic") to Crypto.privateKey(data.getString("postingPrivate"))
+    }
+
+    @Synchronized fun savePublicProfile(name: String, role: String, region: String) {
+        require(name.trim().length in 2..48) { "Display name must be between 2 and 48 characters" }
+        current().put("publicProfile", JSONObject()
+            .put("name", name.trim()).put("role", role.trim().take(32))
+            .put("region", region.trim().take(40)))
+        save()
+    }
+
     @Synchronized fun addContact(alias: String, publicKey: String) {
         require(alias.isNotBlank() && alias.length <= 48)
         val parsed = Crypto.publicKey(publicKey)

@@ -117,7 +117,7 @@ object Envelope {
             .joinToString("|").toByteArray(Charsets.UTF_8)
     }
     fun compose(type: String, clearText: String, pub: String, privateKey: PrivateKey, recipientKeys: List<String>): JSONObject {
-        require(type == "bulletin" || type == "sos" || type == "receipt")
+        require(type == "bulletin" || type == "sos" || type == "receipt" || type == "checkin")
         require(clearText.toByteArray().size <= 2048)
         require(recipientKeys.size <= 10)
         val now = System.currentTimeMillis()
@@ -128,7 +128,7 @@ object Envelope {
         // packets do NOT reveal the user's persistent trusted-contact identity.
         val outer = Crypto.rsaKeyPair()
         val outerPub = Crypto.b64(outer.public.encoded)
-        val payload = if (type == "sos" || type == "receipt") {
+        val payload = if (type == "sos" || type == "receipt" || type == "checkin") {
             require(recipientKeys.isNotEmpty())
             // Sender identity and proof are inside recipient-encrypted data only.
             val proofBytes = "$messageId|$now|$expires|$clearText".toByteArray(Charsets.UTF_8)
@@ -154,14 +154,14 @@ object Envelope {
         val expires = packet.getLong("expires")
         val hops = packet.getInt("hops")
         val type = packet.getString("type")
-        if (type !in setOf("bulletin", "sos", "receipt") || created > now + 120_000 ||
+        if (type !in setOf("bulletin", "sos", "receipt", "checkin") || created > now + 120_000 ||
             expires <= now || expires - created > 7_200_000 || hops !in 0..3 ||
             packet.getJSONObject("recipients").length() > 10 ||
             packet.getString("id").length > 64 || packet.getString("sender").length > 1024 ||
             packet.getString("payload").length > 4096) false
         else Crypto.verify(Crypto.publicKey(packet.getString("sender")), canonical(packet), packet.getString("sig"))
     } catch (_: Exception) { false }
-    fun readBulletin(packet: JSONObject): String = String(Crypto.decode(packet.getString("payload")), Charsets.UTF_8).take(280)
+    fun readBulletin(packet: JSONObject): String = String(Crypto.decode(packet.getString("payload")), Charsets.UTF_8).take(2048)
     data class VerifiedSos(val senderPublicKey: String, val body: String)
     fun tryOpenPrivate(packet: JSONObject, privateKey: PrivateKey): VerifiedSos? {
         val recipients = try { packet.getJSONObject("recipients") } catch (_: Exception) { return null }

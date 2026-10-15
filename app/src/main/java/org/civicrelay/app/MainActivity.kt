@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.os.CancellationSignal
 import android.hardware.biometrics.BiometricPrompt
 import android.hardware.biometrics.BiometricManager
@@ -23,8 +24,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -91,9 +94,17 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() { super.onDestroy() } // application owns CivicService
 
-    fun canUseFingerprint(): Boolean = Build.VERSION.SDK_INT >= 30 &&
-        getSystemService(BiometricManager::class.java).canAuthenticate(
-            BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+    fun canUseFingerprint(): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        // Some OEM builds return null or throw while querying biometric hardware.
+        // Never let an optional convenience feature crash the entire More screen.
+        return runCatching {
+            val manager = getSystemService(BiometricManager::class.java) ?: return@runCatching false
+            manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+                BiometricManager.BIOMETRIC_SUCCESS
+        }.onFailure { Log.w("CivicRelayPrivacy", "Biometric availability check failed", it) }
+            .getOrDefault(false)
+    }
 
     /** Fingerprint never substitutes for the vault key. Keystore authorizes key unwrap. */
     fun fingerprint(enroll: Boolean) {
@@ -297,7 +308,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = { civic.lock(); passphrase = ""; tab = "SOS" }) {
-                        Text("Lock")
+                        Text("Lock vault")
                     }
                 }
             }
@@ -305,14 +316,14 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 6.dp) {
                 listOf(
-                    Triple("SOS", R.drawable.ic_civic_sos, "SOS"),
-                    Triple("Updates", R.drawable.ic_civic_news, "News"),
-                    Triple("Evidence", R.drawable.ic_civic_evidence, "Files"),
-                    Triple("Mesh", R.drawable.ic_civic_nearby, "Nearby"),
+                    Triple("SOS", R.drawable.ic_civic_sos, "Home"),
+                    Triple("Updates", R.drawable.ic_civic_news, "Community"),
+                    Triple("Evidence", R.drawable.ic_civic_evidence, "Evidence"),
+                    Triple("Mesh", R.drawable.ic_civic_nearby, "Connect"),
                     Triple("More", R.drawable.ic_civic_more, "More")
                 ).forEach { (section, image, label) ->
                     NavigationBarItem(
-                        selected = if (section == "More") tab in listOf("More", "Incident", "Contacts") else tab == section,
+                        selected = if (section == "More") tab in listOf("More", "Incident", "Contacts", "SafetyMap") else tab == section,
                         onClick = { tab = section },
                         icon = { Icon(painterResource(image), contentDescription = label, modifier = Modifier.size(21.dp)) },
                         label = { Text(label) }, alwaysShowLabel = true
@@ -346,7 +357,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
             if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
-            if (tab in setOf("Contacts", "Incident")) {
+            if (tab in setOf("Contacts", "Incident", "SafetyMap")) {
                 TextButton(onClick = { tab = "More" }) { Text("← Back to tools") }
             }
             key(tab) {
@@ -359,6 +370,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                     "Incident" -> IncidentTab(civic, ::execute)
                     "Contacts" -> ContactsTab(civic, ::execute)
                     "Mesh" -> MeshTab(civic)
+                    "SafetyMap" -> SafetyMapTab(civic, ::execute)
                     else -> MoreTab(civic, activity) { tab = it }
                 }
             }
@@ -369,53 +381,82 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
 
 
 @Composable private fun MoreTab(civic: CivicService, activity: MainActivity, navigate: (String) -> Unit) {
+    val profile = remember(civic.revision) { civic.vault.publicProfile() }
+    var name by remember(profile) { mutableStateOf(profile.optString("name")) }
+    var role by remember(profile) { mutableStateOf(profile.optString("role")) }
+    var region by remember(profile) { mutableStateOf(profile.optString("region")) }
+    var consent by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    val fingerprintSupported = remember { activity.canUseFingerprint() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Your tools and privacy", style = MaterialTheme.typography.headlineMedium,
+        Text("Settings & your identity", style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold)
-        ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Privacy and quick unlock", style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold)
-                Text("Stay signed in when switching apps. Your vault locks after 2 minutes in the background; Nearby can remain on independently.",
-                    style = MaterialTheme.typography.bodySmall)
-                if (activity.canUseFingerprint()) {
+        Text("Manage what you share. Nothing in your profile is uploaded unless you publish a community post.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ElevatedCard(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Public posting profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Your chosen name and basic details appear alongside public posts. Use only information you are comfortable sharing widely.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(name, { name = it.take(48) }, label = { Text("Display name") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(role, { role = it.take(32) }, label = { Text("Public role (optional)") },
+                    placeholder = { Text("Observer, volunteer, journalist…") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(region, { region = it.take(40) }, label = { Text("Area (optional)") },
+                    placeholder = { Text("District or city, not home address") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = consent, onCheckedChange = { consent = it })
+                    Text("I understand public posts may be copied and redistributed", style = MaterialTheme.typography.bodySmall)
+                }
+                Button(enabled = name.isNotBlank() && consent, modifier = Modifier.fillMaxWidth(), onClick = {
+                    runCatching { civic.savePublicProfile(name, role, region) }
+                        .onSuccess { message = "Public posting profile saved locally" }
+                        .onFailure { message = "Could not save profile: ${it.localizedMessage}" }
+                }) { Text("Save posting profile") }
+                Text("Signed posts prove control of this device key, NOT someone's legal identity. Government ID verification is not enabled.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        ElevatedCard(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Privacy & unlocking", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Your vault has a passphrase. Nearby can remain on while the vault is locked.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                if (fingerprintSupported) {
                     if (civic.biometrics.enrolled) {
-                        OutlinedButton(onClick = { civic.disableBiometric() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Turn off fingerprint unlock")
-                        }
+                        OutlinedButton(onClick = {
+                            runCatching { civic.disableBiometric() }
+                                .onFailure { message = "Couldn't disable fingerprint: ${it.localizedMessage}" }
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Disable fingerprint unlock") }
                     } else {
                         Button(onClick = { activity.fingerprint(true) }, modifier = Modifier.fillMaxWidth()) {
                             Text("Enable fingerprint unlock")
                         }
                     }
-                } else {
-                    Text("Fingerprint quick unlock requires Android 11+ and a strong enrolled fingerprint.",
-                        style = MaterialTheme.typography.bodySmall)
-                }
+                } else Text("Fingerprint is unavailable on this device. Your passphrase still works.",
+                    style = MaterialTheme.typography.bodySmall)
             }
         }
-        Text("Choose what you want to manage. Your vault stays encrypted on this phone.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
         listOf(
-            Triple("Contacts", "Trusted contacts & QR", "Exchange public keys with a person you know, then verify fingerprints"),
-            Triple("Incident", "Document an incident", "Save encrypted observations, badge details and witness notes")
-        ).forEach { (route, title, subtitle) ->
-            ElevatedCard(onClick = { navigate(route) }, shape = RoundedCornerShape(22.dp),
-                modifier = Modifier.fillMaxWidth()) {
+            Triple("Contacts", "Trusted people", "Pair a contact for private SOS and evidence sharing"),
+            Triple("Incident", "Record an incident", "Keep witness notes and badge details encrypted"),
+            Triple("SafetyMap", "Detention reports map", "Privacy-protected area summaries, never an individual tracking map")
+        ).forEach { (route, title, description) ->
+            ElevatedCard(onClick = { navigate(route) }, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(description, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text("→", style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.primary)
+                    Text("›", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
-        Text("© 2026 Chirag Goyal. All rights reserved.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        Text("© 2026 Chirag Goyal. All rights reserved.", style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -425,6 +466,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     var confirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf("") }
+    var checkinStatus by remember { mutableStateOf("") }
+    var checkinConfirm by remember { mutableStateOf(false) }
     var smsPhone by remember { mutableStateOf("") }
     var smsIncludeLocation by remember { mutableStateOf(true) }
     var smsStatus by remember { mutableStateOf("") }
@@ -480,6 +523,26 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 }.addOnFailureListener { openManualSms(null, "unavailable") }
         } catch (_: SecurityException) { smsStatus = "Location permission missing; allow precise location in app settings" }
     }
+    fun shareTrustedCheckIn() {
+        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            checkinStatus = "Grant precise location permission to share a check-in. Nothing was sent."
+            return
+        }
+        checkinStatus = "Getting current position…"
+        locationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, CancellationTokenSource().token)
+            .addOnSuccessListener { current ->
+                if (current == null) checkinStatus = "No current location; nothing was shared."
+                else {
+                    execute { civic.sendLocationCheckIn(current.latitude, current.longitude, current.accuracy) }
+                    checkinStatus = "Encrypted check-in queued for trusted contacts; delivery not guaranteed."
+                }
+            }.addOnFailureListener { checkinStatus = "Location unavailable; nothing was shared." }
+    }
+    val checkinLocationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) shareTrustedCheckIn()
+        else checkinStatus = "Permission denied; nothing was shared."
+    }
     val smsLocationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (awaitingSmsLocationPermission) {
             awaitingSmsLocationPermission = false
@@ -533,6 +596,18 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
         Text("Queued is not delivered. Internet, SMS, and emergency-service calls are NOT initiated by this app.",
             color = MaterialTheme.colorScheme.error)
+        ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Check in with trusted people", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold)
+                Text("Share your current location privately, without sending an emergency alert. This is one-time sharing, not continuous online tracking.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FilledTonalButton(onClick = { checkinConfirm = true }, modifier = Modifier.fillMaxWidth(),
+                    enabled = civic.vault.contacts().isNotEmpty()) { Text("Share my current position once") }
+                if (checkinStatus.isNotBlank()) Text(checkinStatus, style = MaterialTheme.typography.bodySmall)
+            }
+        }
         HorizontalDivider()
         Text("Optional cellular SMS fallback", style = MaterialTheme.typography.titleMedium)
         Text("SMS does not need internet, but requires a working cellular network. It is NOT end-to-end encrypted; the phone carrier can see its contents.")
@@ -548,7 +623,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 smsLocationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             } else prepareSms()
         }, enabled = smsPhone.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text("Open SMS with my location")
+            Text(if (smsIncludeLocation) "Open SMS with location" else "Open SMS without location")
         }
         if (smsStatus.isNotBlank()) Text(smsStatus, style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary)
@@ -566,6 +641,17 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
                 })
         }
     }
+    if (checkinConfirm) AlertDialog(onDismissRequest = { checkinConfirm = false },
+        title = { Text("Share location with trusted contacts?") },
+        text = { Text("Your precise current coordinates are encrypted for every saved trusted contact. Nearby relays cannot read them. Delivery requires a route and is not guaranteed. The location will NOT appear on any public map.") },
+        confirmButton = { TextButton(onClick = {
+            checkinConfirm = false
+            if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED)
+                checkinLocationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            else shareTrustedCheckIn()
+        }) { Text("Share once") } },
+        dismissButton = { TextButton(onClick = { checkinConfirm = false }) { Text("Cancel") } })
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Confirm emergency alert") },
         text = { Text("Encrypted alert will be queued for trusted recipients and offered to connected nearby devices. There is no delivery guarantee.") },
         confirmButton = { TextButton(onClick = {
@@ -579,18 +665,68 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
 
 @Composable private fun UpdatesTab(civic: CivicService, execute: (() -> Unit) -> Unit) {
     var text by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Community updates", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("Everything posted here may be read, copied or redistributed by strangers. Reports are unverified.")
-        OutlinedTextField(text, { text = it.take(280) }, label = { Text("Short public update") },
-            modifier = Modifier.fillMaxWidth(), minLines = 2)
-        Button(onClick = { val post = text; execute { civic.post(post) }; text = "" }, enabled = text.isNotBlank()) {
-            Text("Share with nearby people")
+    var selectedCategory by remember { mutableStateOf("Community") }
+    val profile = remember(civic.revision) { civic.vault.publicProfile() }
+    val name = profile.optString("name")
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Community", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Local updates from nearby devices · Messages are public and may spread further.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        ElevatedCard(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Share an update", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(if (name.isNotBlank()) "Posting as $name · Signed by your device"
+                    else "Set your display name in More → Settings before posting",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Community", "Safety", "Help").forEach { category ->
+                        FilterChip(selected = selectedCategory == category, onClick = { selectedCategory = category },
+                            label = { Text(category) })
+                    }
+                }
+                OutlinedTextField(text, { text = it.take(280) }, label = { Text("What did you observe?") },
+                    placeholder = { Text("Share first-hand, verifiable information…") },
+                    modifier = Modifier.fillMaxWidth(), minLines = 3)
+                Button(onClick = {
+                    val post = text
+                    val category = selectedCategory
+                    execute { civic.post(post, category) }
+                    text = ""
+                }, enabled = text.isNotBlank() && name.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                    Text("Publish to nearby community")
+                }
+                Text("A valid device signature does not prove a person's name or facts are verified.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            }
         }
-        HorizontalDivider()
+        Text("Latest nearby reports", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         val entries = civic.vault.records("bulletins")
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(entries) { item -> RecordCard("Unverified • ${item.optString("sender")} • ${whenText(item.optLong("time"))}", item.optString("text")) }
+        if (entries.isEmpty()) Text("No updates yet. Nearby sharing works without internet; distant sync requires a server.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 28.dp)) {
+            items(entries) { item ->
+                ElevatedCard(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                                Text(item.optString("displayName", "?").take(1).uppercase(),
+                                    Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(item.optString("displayName").ifBlank { "Unidentified poster" }, fontWeight = FontWeight.Bold)
+                                Text("${item.optString("role")} · ${item.optString("region")} · ${whenText(item.optLong("time"))}",
+                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Text(item.optString("text"), style = MaterialTheme.typography.bodyLarge)
+                        Text("${item.optString("category", "Community")} · ${if (item.optBoolean("postingKeySignatureVerified")) "Verified key signature" else "Legacy/unverified signature"} · Name not ID-verified",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         }
     }
 }
@@ -717,6 +853,8 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     }
     var status by remember { mutableStateOf("") }
     var selectedKey by remember { mutableStateOf("") }
+    var evidenceSection by remember { mutableStateOf("Library") }
+    val direct = civic.mesh.evidence
     var opened by remember { mutableStateOf<VerifiedEvidence?>(null) }
     var previewBusy by remember { mutableStateOf(false) }
     var previewError by remember { mutableStateOf("") }
@@ -759,8 +897,18 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
     val grant = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p ->
         permitted = p[Manifest.permission.CAMERA] == true
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Private evidence camera", style = MaterialTheme.typography.headlineSmall)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Evidence vault", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Capture securely. Review and verify your recordings. Share encrypted copies only with trusted people.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            listOf("Library", "Camera", "Share").forEachIndexed { index, section ->
+                SegmentedButton(shape = SegmentedButtonDefaults.itemShape(index, 3),
+                    selected = evidenceSection == section, onClick = { evidenceSection = section }) { Text(section) }
+            }
+        }
+        if (evidenceSection == "Camera") {
+        Text("Capture a record", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Text("Photos/videos temporarily exist as plaintext in private app cache before encryption. Not seizure-proof.",
             color = MaterialTheme.colorScheme.error)
         if (!permitted) {
@@ -776,11 +924,12 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
             if (status.isNotBlank()) Text(status)
         }
+        }
+        if (evidenceSection == "Share") {
         HorizontalDivider()
-        Text("Encrypted copies for trusted contacts", style = MaterialTheme.typography.titleMedium)
+        Text("Share encrypted evidence", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text("Send a protected photo or video to a trusted person nearby. Both vaults must be unlocked to approve an evidence copy; Nearby can stay enabled in the background.",
             style = MaterialTheme.typography.bodySmall)
-        val direct = civic.mesh.evidence
         Text("Trusted nearby contacts: ${direct.trustedNearby} • Progress: ${direct.progress}%")
         Text(direct.status, style = MaterialTheme.typography.bodySmall)
         val pendingOffer = direct.offer
@@ -795,12 +944,16 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             }
         }
         val contacts = civic.vault.contacts()
+        if (contacts.isEmpty()) Text("No trusted people saved. Add one from More → Trusted people before sharing.",
+            style = MaterialTheme.typography.bodySmall)
         contacts.forEach { (name, publicKey) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(selected = selectedKey == publicKey, onClick = { selectedKey = publicKey })
                 Text(name + " (" + Crypto.fingerprint(publicKey).take(10) + "…)")
             }
         }
+        }
+        if (evidenceSection == "Library") {
         val media = civic.vault.records("media").take(20)
         Text("Every preview is decrypted and SHA-256 verified. Viewing uses short-lived memory only; exported copies are NOT encrypted.",
             style = MaterialTheme.typography.bodySmall)
@@ -819,26 +972,73 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
             OutlinedButton(onClick = { opened?.close(); opened = null }) { Text("Close private viewer") }
             HorizontalDivider()
         }
-        media.forEach { item ->
-            RecordCard("${item.optString("kind")} • ${whenText(item.optLong("created"))}",
-                "SHA-256: ${item.optString("sha256")}\nOCR suggestion: ${item.optString("ocrSuggestion").take(180)}" +
-                if (item.has("importedFrom")) "\nRecovered from trusted contact" else "\nRecorded on this phone")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = !previewBusy, onClick = { viewVerified(item.getString("id")) }) {
-                    Text("Verify & view")
+        Text("${media.size} recent encrypted recordings", style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold)
+        if (media.isEmpty()) {
+            ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("📷", style = MaterialTheme.typography.displaySmall)
+                    Text("No recordings yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Open Camera to capture your first encrypted photo or video.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium)
+                    FilledTonalButton(onClick = { evidenceSection = "Camera" }) { Text("Open camera") }
                 }
-                OutlinedButton(onClick = {
-                    confirmPlainExport = item.getString("id") to item.getString("kind")
-                }) { Text("Export decrypted copy") }
             }
-            Button(enabled = selectedKey.isNotBlank() && civic.mesh.active &&
-                direct.trustedEndpointFor(selectedKey), onClick = {
-                execute { civic.offerNearbyEvidence(item.getString("id"), selectedKey) }
-            }) { Text("Send encrypted copy over nearby") }
-            OutlinedButton(enabled = selectedKey.isNotBlank(), onClick = {
-                exportEvidence(item.getString("id"), selectedKey)
-            }) { Text("Export encrypted .crb file manually") }
         }
+        media.forEach { item ->
+            ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer) {
+                            Text(if (item.optString("kind") == "photo") "📷" else "▶",
+                                Modifier.padding(14.dp), style = MaterialTheme.typography.titleLarge)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(if (item.optString("kind") == "photo") "Encrypted photo" else "Encrypted video",
+                                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(whenText(item.optLong("created")), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("Locked", color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text(if (item.has("importedFrom")) "Received from a trusted contact" else "Captured on this device",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (item.optString("ocrSuggestion").isNotBlank()) {
+                        Text("Recognized text: ${item.optString("ocrSuggestion").take(140)}",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(enabled = !previewBusy, modifier = Modifier.fillMaxWidth(), onClick = {
+                        viewVerified(item.getString("id"))
+                    }) { Text("Verify and view") }
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                        confirmPlainExport = item.getString("id") to item.getString("kind")
+                    }) { Text("Export an unencrypted copy") }
+                }
+            }
+        }
+        }
+        if (evidenceSection == "Share") {
+            civic.vault.records("media").take(20).forEach { item ->
+                ElevatedCard(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("${item.optString("kind").replaceFirstChar { it.uppercase() }} · ${whenText(item.optLong("created"))}",
+                            fontWeight = FontWeight.SemiBold)
+                        Button(enabled = selectedKey.isNotBlank() && civic.mesh.active &&
+                            direct.trustedEndpointFor(selectedKey), onClick = {
+                            execute { civic.offerNearbyEvidence(item.getString("id"), selectedKey) }
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Send securely to selected person") }
+                        OutlinedButton(enabled = selectedKey.isNotBlank(), onClick = {
+                            exportEvidence(item.getString("id"), selectedKey)
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Save an encrypted copy to transfer") }
+                    }
+                }
+            }
         HorizontalDivider()
         Text("Receive a trusted contact's evidence", style = MaterialTheme.typography.titleMedium)
         Text("Select an encrypted .crb file. It will only be accepted if its signature is from a saved trusted contact and it is addressed to you.",
@@ -865,6 +1065,7 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
         Text("A signed 'stored' receipt confirms only that the intended trusted app imported and verified the file. It is not proof someone viewed it or that the copy will remain available.",
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
     }
     val request = confirmPlainExport
     if (request != null) AlertDialog(
@@ -878,6 +1079,52 @@ private fun whenText(millis: Long): String = DateFormat.getDateTimeInstance(Date
         }) { Text("Choose destination") } },
         dismissButton = { TextButton(onClick = { confirmPlainExport = null }) { Text("Cancel") } }
     )
+}
+
+@Composable private fun SafetyMapTab(civic: CivicService, execute: (() -> Unit) -> Unit) {
+    val context = LocalContext.current
+    var locality by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var acknowledged by remember { mutableStateOf(false) }
+    val reports = civic.vault.records("incidents")
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Detention reports", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Anonymous area-level reports only. Exact individual locations and names will never appear on a public map.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Report an area", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                OutlinedTextField(locality, { locality = it.take(80) }, label = { Text("Broad area / neighborhood") },
+                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(description, { description = it.take(280) }, label = { Text("What was observed? (no names or exact addresses)") },
+                    modifier = Modifier.fillMaxWidth(), minLines = 2)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(acknowledged, { acknowledged = it })
+                    Text("I will not identify or reveal anyone's precise whereabouts", style = MaterialTheme.typography.bodySmall)
+                }
+                Button(onClick = {
+                    val l = locality; val d = description
+                    execute { civic.saveIncident("Area report: $d", "", l) }
+                    locality = ""; description = ""; acknowledged = false
+                }, enabled = acknowledged && locality.isNotBlank() && description.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()) { Text("Save private area report") }
+            }
+        }
+        ElevatedCard(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Public situation map", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Not available yet: a public hotspot should require multiple independent corroborating reports, coarse geolocation, delays, moderation, and a deployed server. Private incident notes never publish automatically.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Local private reports: ${reports.size}", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org")))
+                }, modifier = Modifier.fillMaxWidth()) { Text("Open map (internet required)") }
+            }
+        }
+        Text("Never assume reports are confirmed detentions. False or stale locations can place people at risk.",
+            color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable private fun MeshTab(civic: CivicService) {
